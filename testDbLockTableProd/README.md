@@ -2,8 +2,8 @@
 
 Ghi chú này nhìn theo góc production PostgreSQL: thao tác nào lấy lock gì, có
 block đọc/ghi không, và cách làm an toàn hơn cho từng loại thao tác. Kèm theo
-là một lab nhỏ (`main.js` + `lock-demos/`) để tái hiện lock thật trên máy local
-thay vì chỉ đọc lý thuyết.
+là một lab nhỏ bằng Go (`cmd/`) để tái hiện lock thật trên máy local thay vì
+chỉ đọc lý thuyết.
 
 ## 1. Backup 1 table có lock không?
 
@@ -29,7 +29,9 @@ migration/schema change phải chờ. Theo PostgreSQL docs, `ALTER TABLE` mặc
 định lấy lock mạnh nhất cần thiết cho thao tác đó, và nhiều dạng lấy
 `ACCESS EXCLUSIVE`.
 
-## 2. Thêm 1 field nullable có lock không?
+## 2. Thêm cột / xoá cột có lock không?
+
+### Thêm cột nullable, không default
 
 Có, nhưng thường rất nhanh:
 
@@ -54,6 +56,62 @@ ALTER TABLE users ADD COLUMN nickname text;
 
 `lock_timeout` khiến lệnh fail nhanh thay vì treo vô thời hạn và chặn cả
 hàng đợi phía sau nó.
+
+### Thêm cột `NOT NULL DEFAULT ...` — ranh giới volatile
+
+Từ PostgreSQL 11, nếu default là biểu thức **non-volatile**, PostgreSQL lưu
+giá trị đó vào `pg_attribute.attmissingval` và trả về nó khi đọc row cũ —
+**không rewrite bảng**, nhanh như thêm cột nullable:
+
+```sql
+ALTER TABLE users ADD COLUMN is_priority boolean NOT NULL DEFAULT false;
+ALTER TABLE users ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();
+```
+
+`now()` là stable chứ không volatile, nên vẫn chỉ được đánh giá **một lần**
+rồi lưu lại — không rewrite.
+
+Ngược lại, default **volatile** buộc PostgreSQL ghi giá trị khác nhau cho
+từng row, tức **rewrite toàn bảng** và giữ `ACCESS EXCLUSIVE` suốt thời gian
+đó:
+
+```sql
+ALTER TABLE users ADD COLUMN token uuid NOT NULL DEFAULT gen_random_uuid();
+ALTER TABLE users ADD COLUMN r double precision NOT NULL DEFAULT random();
+```
+
+Cũng rewrite: `GENERATED ALWAYS AS (...) STORED` và `GENERATED ... AS IDENTITY`.
+
+Còn `ADD COLUMN ... NOT NULL` mà **không** có default thì trên bảng đã có row
+sẽ lỗi thẳng (`column contains null values`) — chỉ chạy được trên bảng rỗng.
+
+Điểm dễ nhầm: `lock_timeout` chỉ giới hạn thời gian **chờ lấy** lock, không
+giới hạn thời gian **giữ** lock. Đặt `lock_timeout = '2s'` không cứu được bạn
+khỏi một rewrite chạy 10 phút — muốn chặn phải dùng `statement_timeout`.
+
+### Xoá cột
+
+```sql
+ALTER TABLE users DROP COLUMN nickname;
+```
+
+Cũng lấy `ACCESS EXCLUSIVE`, cũng block cả read lẫn write — nhưng
+**không rewrite bảng**. PostgreSQL chỉ đánh dấu `attisdropped = true` trong
+`pg_attribute` và đổi tên cột thành `........pg.dropped.N........`. Data cũ
+vẫn nằm nguyên trong từng tuple, chỉ là không ai đọc tới nữa.
+
+Hệ quả:
+
+- Thời gian giữ lock vài ms, không phụ thuộc kích thước bảng.
+- **Không giải phóng disk space.** Muốn lấy lại phải `VACUUM FULL` hoặc
+  `pg_repack` — và `VACUUM FULL` mới là thứ nguy hiểm thật (rewrite toàn
+  bảng, giữ `ACCESS EXCLUSIVE` suốt thời gian đó).
+- Index/constraint phụ thuộc cột đó bị drop kèm. Nếu có FK từ bảng khác trỏ
+  vào thì cần `CASCADE`, và lock lan sang bảng kia.
+
+Rủi ro thật của `DROP COLUMN` không nằm ở bản thân câu lệnh mà ở **hàng đợi
+lock**, cộng với phía app: code cũ còn `SELECT nickname` sẽ lỗi ngay khi cột
+biến mất, nên phải bỏ tham chiếu trong code và deploy xong rồi mới drop cột.
 
 ## 3. Thêm data cho field nullable rồi thêm constraint thì sao?
 
@@ -164,8 +222,9 @@ CREATE INDEX CONCURRENTLY idx_users_email ON users(email);
 |---|---|---|
 | `pg_dump -t table` | Thấp | Chỉ `ACCESS SHARE` |
 | `ADD COLUMN` nullable, không default | Thấp, `ACCESS EXCLUSIVE` rất ngắn | Chỉ đổi metadata |
-| `ADD COLUMN` nullable với constant default | Thường ổn ở PostgreSQL bản mới | Không rewrite bảng |
-| `ADD COLUMN ... NOT NULL DEFAULT ...` | Cần cẩn thận | Có thể rewrite/scan tùy version/case |
+| `ADD COLUMN NOT NULL DEFAULT <non-volatile>` | Thấp từ PostgreSQL 11 | Default lưu ở `attmissingval`, không rewrite |
+| `ADD COLUMN NOT NULL DEFAULT <volatile>` | Rất cao | Rewrite toàn bảng, giữ `ACCESS EXCLUSIVE` suốt thời gian đó |
+| `ADD COLUMN ... UNIQUE` / `PRIMARY KEY` | Cao | Phải build index trong lúc giữ lock |
 | `ALTER COLUMN ... TYPE` | Cao | Thường phải rewrite toàn bảng |
 | `SET NOT NULL` trực tiếp trên bảng lớn | Cao | Phải scan toàn bảng để đảm bảo không còn NULL |
 | `ADD CHECK ... NOT VALID` | Thấp | Không scan ngay |
@@ -174,7 +233,7 @@ CREATE INDEX CONCURRENTLY idx_users_email ON users(email);
 | `CREATE INDEX` | Cao | Block `INSERT`/`UPDATE`/`DELETE` |
 | `CREATE INDEX CONCURRENTLY` | Thấp | Không chặn read/write bình thường |
 | `CREATE TABLE AS SELECT` | Thấp về lock, nặng I/O | Chỉ đọc, nhưng tốn tài nguyên |
-| `DROP COLUMN` | Cao (nhưng nhanh) | Lock mạnh dù chỉ đổi metadata |
+| `DROP COLUMN` | Thấp, `ACCESS EXCLUSIVE` rất ngắn | Chỉ đánh dấu `attisdropped`, không rewrite, không giải phóng disk |
 | `DROP TABLE` / `TRUNCATE` | Cao | `ACCESS EXCLUSIVE`, phá cả dependency |
 | `VACUUM FULL` / `CLUSTER` | Rất cao | Rewrite toàn bảng |
 | `REINDEX` thường | Cao | Có thể block read/write |
@@ -193,7 +252,9 @@ CREATE INDEX CONCURRENTLY idx_users_email ON users(email);
 - Constraint trên production luôn theo pattern `NOT VALID` rồi
   `VALIDATE CONSTRAINT`.
 - Luôn set `lock_timeout` khi chạy DDL, để lệnh fail nhanh và rõ ràng thay vì
-  treo và chặn cả hàng đợi phía sau.
+  treo và chặn cả hàng đợi phía sau. Nhưng nhớ `lock_timeout` chỉ chặn thời
+  gian **chờ** lock — thời gian **giữ** lock phải chặn bằng
+  `statement_timeout`.
 
 ## 7. Lab: tái hiện lock table thật trên local (Go)
 
@@ -213,7 +274,9 @@ cmd/
   longtx/                  # "session A": giữ transaction mở lâu
   createindex/             # CREATE INDEX thường (blocking)
   createindexconcurrently/ # CREATE INDEX CONCURRENTLY (không block)
-  addcolumn/               # ALTER TABLE ADD COLUMN NOT NULL DEFAULT
+  addcolumn/               # ADD COLUMN NOT NULL DEFAULT false (metadata-only)
+  addcolumnvolatile/       # ADD COLUMN NOT NULL DEFAULT gen_random_uuid() (rewrite)
+  dropcolumn/              # DROP COLUMN (metadata-only, không giải phóng disk)
   watchlocks/              # theo dõi ai đang block ai theo thời gian thực
 ```
 
@@ -262,6 +325,40 @@ Cũng có thể thử `go run ./cmd/addcolumn` để thấy `ALTER TABLE ... ADD
 COLUMN ... NOT NULL DEFAULT ...` xếp hàng chờ tương tự — vì nó cần
 `ACCESS EXCLUSIVE`, lock mạnh nhất, xung đột với mọi lock khác kể cả
 `ACCESS SHARE`.
+
+### Tái hiện: metadata-only vs rewrite toàn bảng
+
+Ba demo dưới đây đều in `pg_relation_filenode` trước và sau khi chạy DDL.
+Filenode **đổi** nghĩa là PostgreSQL đã ghi lại toàn bộ bảng vào file mới —
+bằng chứng dứt điểm của rewrite, không phải suy đoán từ thời gian chạy.
+
+```bash
+go run ./cmd/addcolumn          # ADD COLUMN NOT NULL DEFAULT false
+go run ./cmd/addcolumnvolatile  # ADD COLUMN NOT NULL DEFAULT gen_random_uuid()
+go run ./cmd/dropcolumn         # DROP COLUMN
+```
+
+Kết quả thật trên bảng 2 triệu row (PostgreSQL 16):
+
+| Demo | Filenode | Size | Thời gian |
+|---|---|---|---|
+| `addcolumn` (`DEFAULT false`) | 16506 → 16506 | 235 MB → 235 MB | 0.0s |
+| `addcolumnvolatile` (`gen_random_uuid()`) | 16506 → **16518** | 235 MB → **282 MB** | 2.3s |
+| `dropcolumn` | 16506 → 16506 | 235 MB → 235 MB | 0.0s |
+
+Đọc ra ba điều:
+
+- `DEFAULT false` là non-volatile nên **không rewrite** — nhanh bất kể bảng
+  to cỡ nào. Bảng risk ở mục 6 hay bị hiểu nhầm chỗ này.
+- `gen_random_uuid()` là volatile nên **rewrite toàn bảng**, filenode đổi và
+  size tăng. 2.3s ở đây là với 2 triệu row trên máy local — trên bảng
+  production trăm triệu row thì đây là downtime thật, vì `ACCESS EXCLUSIVE`
+  bị giữ suốt thời gian rewrite.
+- `DROP COLUMN` nhanh nhưng **size không giảm chút nào** — data cũ vẫn nằm
+  trong từng tuple cho tới khi `VACUUM FULL`/`pg_repack`.
+
+Chạy `./cmd/addcolumnvolatile` song song với `./cmd/watchlocks` để thấy trong
+2.3s đó nó chặn mọi session khác, kể cả `SELECT`.
 
 ### Quan sát blocking chain theo thời gian thực
 
