@@ -216,7 +216,108 @@ SET statement_timeout = '30min';
 CREATE INDEX CONCURRENTLY idx_users_email ON users(email);
 ```
 
-## 6. Bảng tổng hợp rủi ro lock theo thao tác
+## 6. Các loại lock trên PostgreSQL và độ mạnh
+
+PostgreSQL có **8 table-level lock mode**. Xếp từ nhẹ tới mạnh:
+
+| # | Lock mode | Lệnh nào lấy | Chặn gì |
+|---|---|---|---|
+| 1 | `ACCESS SHARE` | `SELECT`, `COPY TO` | Chỉ xung đột với `ACCESS EXCLUSIVE` |
+| 2 | `ROW SHARE` | `SELECT ... FOR UPDATE/FOR SHARE/FOR NO KEY UPDATE/FOR KEY SHARE` | `EXCLUSIVE` trở lên |
+| 3 | `ROW EXCLUSIVE` | `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `COPY FROM` | `SHARE` trở lên |
+| 4 | `SHARE UPDATE EXCLUSIVE` | `VACUUM` (không `FULL`), `ANALYZE`, `CREATE INDEX CONCURRENTLY`, `REINDEX CONCURRENTLY`, `ALTER TABLE ... VALIDATE CONSTRAINT`, `ALTER TABLE ... SET STATISTICS`, `COMMENT ON` | Không chặn read/write thường |
+| 5 | `SHARE` | `CREATE INDEX` (không `CONCURRENTLY`) | Chặn write, cho read |
+| 6 | `SHARE ROW EXCLUSIVE` | `CREATE TRIGGER`, `ALTER TABLE ... ADD FOREIGN KEY` | Chặn write, cho read |
+| 7 | `EXCLUSIVE` | `REFRESH MATERIALIZED VIEW CONCURRENTLY` | Chặn tất cả trừ `SELECT` thường |
+| 8 | `ACCESS EXCLUSIVE` | `DROP TABLE`, `TRUNCATE`, `VACUUM FULL`, `CLUSTER`, `REINDEX`, `REFRESH MATERIALIZED VIEW`, hầu hết `ALTER TABLE`, `LOCK TABLE` mặc định | Chặn tất cả, kể cả `SELECT` |
+
+### Ma trận xung đột
+
+"Mạnh/nhẹ" chỉ là cách nói tắt. Thứ thật sự quyết định "cái gì block cái gì"
+là ma trận này — `✗` nghĩa là phải chờ:
+
+| Muốn lấy ↓ \ Đang giữ → | AS | RS | RE | SUE | S | SRE | E | AE |
+|---|---|---|---|---|---|---|---|---|
+| `ACCESS SHARE` (AS) | | | | | | | | ✗ |
+| `ROW SHARE` (RS) | | | | | | | ✗ | ✗ |
+| `ROW EXCLUSIVE` (RE) | | | | | ✗ | ✗ | ✗ | ✗ |
+| `SHARE UPDATE EXCLUSIVE` (SUE) | | | | ✗ | ✗ | ✗ | ✗ | ✗ |
+| `SHARE` (S) | | | ✗ | ✗ | | ✗ | ✗ | ✗ |
+| `SHARE ROW EXCLUSIVE` (SRE) | | | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| `EXCLUSIVE` (E) | | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| `ACCESS EXCLUSIVE` (AE) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+
+Ma trận đối xứng. Bảng trên đã được kiểm chứng bằng cách chạy thật cả 64 cặp
+`LOCK TABLE ... IN <mode> MODE` trên PostgreSQL 16 với `lock_timeout` ngắn,
+chứ không chép từ docs.
+
+Đọc ra được mấy điều đáng nhớ:
+
+- `ACCESS SHARE` (đọc) chỉ bị chặn bởi đúng một thứ: `ACCESS EXCLUSIVE`. Nên
+  chỉ có nhóm DDL nặng mới làm `SELECT` đứng hình.
+- `SHARE` **không** tự xung đột với `SHARE` — hai `CREATE INDEX` trên cùng
+  bảng chạy song song được. Nhưng nó xung đột với `ROW EXCLUSIVE`, nên chặn
+  hết `INSERT`/`UPDATE`/`DELETE`.
+- `SHARE UPDATE EXCLUSIVE` **tự xung đột với chính nó**. Đó là lý do hai
+  `CREATE INDEX CONCURRENTLY` trên cùng một bảng phải xếp hàng chờ nhau, và
+  `VACUUM` cũng không chạy song song trên cùng bảng — dù cả hai đều "không
+  chặn read/write".
+- `ACCESS EXCLUSIVE` là mode duy nhất chặn cả `ACCESS SHARE`, tức mode duy
+  nhất làm `SELECT` phải chờ.
+
+### Tên lock dễ gây hiểu nhầm
+
+- `ROW SHARE` và `ROW EXCLUSIVE` là lock **cấp bảng**, không phải cấp row.
+  Tên chỉ có nghĩa "tôi đang định đụng tới row trong bảng này".
+- `SHARE` không nhẹ hơn `ROW EXCLUSIVE` theo kiểu trực giác — nó chặn write,
+  còn `ROW EXCLUSIVE` thì không.
+- Chữ `EXCLUSIVE` xuất hiện trong 5/8 tên nhưng độ mạnh rất khác nhau:
+  `SHARE UPDATE EXCLUSIVE` là một trong những mode nhẹ nhất, còn
+  `ACCESS EXCLUSIVE` là mạnh nhất.
+
+### Row-level lock
+
+Khác hẳn nhóm trên, đây là lock trên từng row, xếp từ nhẹ tới mạnh:
+
+`FOR KEY SHARE` < `FOR SHARE` < `FOR NO KEY UPDATE` < `FOR UPDATE`
+
+- `UPDATE` tự lấy `FOR NO KEY UPDATE` (hoặc `FOR UPDATE` nếu đụng cột key),
+  `DELETE` lấy `FOR UPDATE`.
+- Row lock **không bao giờ chặn người đọc** — nhờ MVCC, `SELECT` thường luôn
+  đọc được snapshot cũ. Chỉ writer mới chờ writer.
+- Nhưng transaction giữ row lock vẫn đồng thời giữ `ROW EXCLUSIVE` ở cấp
+  bảng — và chính lock cấp bảng đó mới là thứ chặn DDL. Đây đúng là kịch bản
+  `cmd/longtx` trong lab tái hiện.
+
+### Điểm quan trọng nhất về vòng đời lock
+
+**Mọi table-level lock đều được giữ tới hết transaction**, chỉ nhả khi
+`COMMIT` hoặc `ROLLBACK` — không nhả sớm ngay sau khi câu lệnh chạy xong.
+Nên một transaction mở lâu, dù chỉ `SELECT` một dòng, vẫn đủ để chặn đứng
+migration phía sau và kéo theo cả hàng đợi.
+
+Tự kiểm tra mode nào đang được giữ:
+
+```sql
+SELECT pid, mode, granted, relation::regclass AS table
+FROM pg_locks
+WHERE locktype = 'relation' AND relation = 'lock_test_orders'::regclass;
+
+SELECT pid, pg_blocking_pids(pid), query
+FROM pg_stat_activity
+WHERE cardinality(pg_blocking_pids(pid)) > 0;
+```
+
+Muốn lấy lock bằng tay để thử nghiệm:
+
+```sql
+BEGIN;
+LOCK TABLE lock_test_orders IN ACCESS EXCLUSIVE MODE;
+-- mở session khác chạy SELECT để thấy nó đứng im
+ROLLBACK;
+```
+
+## 7. Bảng tổng hợp rủi ro lock theo thao tác
 
 | Thao tác | Lock risk | Vì sao |
 |---|---|---|
@@ -256,7 +357,7 @@ CREATE INDEX CONCURRENTLY idx_users_email ON users(email);
   gian **chờ** lock — thời gian **giữ** lock phải chặn bằng
   `statement_timeout`.
 
-## 7. Lab: tái hiện lock table thật trên local (Go)
+## 8. Lab: tái hiện lock table thật trên local (Go)
 
 Phần trên là lý thuyết — phần này là một bảng ~2 triệu dòng chạy trong
 Docker, để bạn tự tay chạy các thao tác nguy hiểm ở trên và **thấy lock xảy
@@ -349,7 +450,7 @@ Kết quả thật trên bảng 2 triệu row (PostgreSQL 16):
 Đọc ra ba điều:
 
 - `DEFAULT false` là non-volatile nên **không rewrite** — nhanh bất kể bảng
-  to cỡ nào. Bảng risk ở mục 6 hay bị hiểu nhầm chỗ này.
+  to cỡ nào. Bảng risk ở mục 7 hay bị hiểu nhầm chỗ này.
 - `gen_random_uuid()` là volatile nên **rewrite toàn bảng**, filenode đổi và
   size tăng. 2.3s ở đây là với 2 triệu row trên máy local — trên bảng
   production trăm triệu row thì đây là downtime thật, vì `ACCESS EXCLUSIVE`
