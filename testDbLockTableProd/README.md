@@ -275,6 +275,96 @@ chứ không chép từ docs.
   `SHARE UPDATE EXCLUSIVE` là một trong những mode nhẹ nhất, còn
   `ACCESS EXCLUSIVE` là mạnh nhất.
 
+### Lock của `REFRESH MATERIALIZED VIEW` nằm trên đâu?
+
+Đây là chỗ hay nhầm nhất. **`REFRESH MATERIALIZED VIEW` lock chính
+materialized view, không phải lock các bảng nguồn bằng `ACCESS EXCLUSIVE`.**
+
+Tạo matview để tự thử:
+
+```sql
+CREATE MATERIALIZED VIEW mv_lock_test AS
+  SELECT status, count(*) AS n, avg(amount) AS avg_amount
+  FROM lock_test_orders GROUP BY status;
+
+CREATE UNIQUE INDEX mv_lock_test_status ON mv_lock_test(status);
+```
+
+Giữ refresh trong một transaction mở rồi soi `pg_locks` (PostgreSQL 16):
+
+`REFRESH MATERIALIZED VIEW mv_lock_test` — không `CONCURRENTLY`:
+
+| Relation | Lock mode |
+|---|---|
+| `lock_test_orders` (bảng nguồn) | `AccessShareLock` |
+| `lock_test_orders_pkey` | `AccessShareLock` |
+| `mv_lock_test` | **`AccessExclusiveLock`** |
+| `mv_lock_test_status` | `AccessExclusiveLock` |
+
+`REFRESH MATERIALIZED VIEW CONCURRENTLY mv_lock_test`:
+
+| Relation | Lock mode |
+|---|---|
+| `lock_test_orders` (bảng nguồn) | `AccessShareLock` |
+| `lock_test_orders_pkey` | `AccessShareLock` |
+| `mv_lock_test` | **`ExclusiveLock`** + `RowExclusiveLock` |
+| `mv_lock_test_status` | `AccessShareLock` + `RowExclusiveLock` |
+
+Bảng nguồn nhận đúng `ACCESS SHARE` ở **cả hai** biến thể — tức là y hệt một
+câu `SELECT` bình thường. Toàn bộ phần lock mạnh nằm trên matview và index
+của nó.
+
+### Hệ quả đo được
+
+Giữ mỗi biến thể refresh chạy trong transaction mở, rồi thử 4 thao tác từ
+session khác với `lock_timeout` ngắn:
+
+| Thao tác từ session khác | `REFRESH` thường | `REFRESH CONCURRENTLY` |
+|---|---|---|
+| `SELECT` trên **matview** | **BỊ CHẶN** | Chạy được (đọc dữ liệu cũ) |
+| `SELECT` trên bảng nguồn | Chạy được | Chạy được |
+| `INSERT` vào bảng nguồn | Chạy được | Chạy được |
+| `ALTER TABLE` bảng nguồn | **BỊ CHẶN** | **BỊ CHẶN** |
+
+Nói gọn nếu bị hỏi phỏng vấn:
+
+> Với `REFRESH MATERIALIZED VIEW` bình thường, PostgreSQL lấy `ACCESS
+> EXCLUSIVE` lock trên materialized view, nên các query đọc materialized view
+> sẽ bị block trong lúc refresh. Với `CONCURRENTLY`, PostgreSQL refresh theo
+> hướng concurrent để các transaction khác vẫn có thể đọc dữ liệu cũ trong
+> quá trình refresh. Lock ở đây vẫn liên quan đến materialized view, không
+> phải `ACCESS EXCLUSIVE` lock trên các bảng source.
+
+### Cái bẫy: `CONCURRENTLY` không cứu được DDL trên bảng nguồn
+
+Dòng cuối bảng trên là chỗ dễ bỏ sót: `ALTER TABLE` trên **bảng nguồn** bị
+chặn ở **cả hai** biến thể. Lý do nằm ngay trong ma trận xung đột phía trên —
+refresh giữ `ACCESS SHARE` trên bảng nguồn suốt thời gian chạy, mà
+`ACCESS SHARE` xung đột với `ACCESS EXCLUSIVE`.
+
+Nên một refresh chạy 30 phút sẽ làm migration xếp hàng đúng 30 phút, và mọi
+query tới sau migration đó cũng xếp hàng theo. `CONCURRENTLY` bảo vệ người
+đọc matview, nó không bảo vệ DDL trên bảng nguồn.
+
+### Giá phải trả của `CONCURRENTLY`
+
+`RowExclusiveLock` trong bảng lock ở trên đã lộ ra cách nó hoạt động: thay vì
+ghi đè toàn bộ matview, PostgreSQL build dữ liệu mới vào bảng tạm rồi **apply
+diff bằng `INSERT`/`UPDATE`/`DELETE`** lên matview cũ. Hệ quả:
+
+- Chậm hơn bản thường và tốn WAL hơn.
+- Tạo dead tuple, dẫn tới bloat trên matview — cần autovacuum theo kịp.
+- Matview bắt buộc phải có ít nhất một `UNIQUE` index không kèm `WHERE`, nếu
+  không sẽ lỗi: `cannot refresh materialized view ... concurrently`.
+- Matview phải đã được populate ít nhất một lần, nếu không sẽ lỗi:
+  `CONCURRENTLY cannot be used when the materialized view is not populated`.
+- `EXCLUSIVE` tự xung đột với chính nó, nên hai `REFRESH ... CONCURRENTLY`
+  trên cùng một matview phải chờ nhau.
+
+Một khác biệt đáng nhớ so với `CREATE INDEX CONCURRENTLY`:
+`REFRESH MATERIALIZED VIEW CONCURRENTLY` **chạy được bên trong transaction
+block**.
+
 ### Row-level lock
 
 Khác hẳn nhóm trên, đây là lock trên từng row, xếp từ nhẹ tới mạnh:
@@ -338,7 +428,8 @@ ROLLBACK;
 | `DROP TABLE` / `TRUNCATE` | Cao | `ACCESS EXCLUSIVE`, phá cả dependency |
 | `VACUUM FULL` / `CLUSTER` | Rất cao | Rewrite toàn bảng |
 | `REINDEX` thường | Cao | Có thể block read/write |
-| `REFRESH MATERIALIZED VIEW` không `CONCURRENTLY` | Cao | Block đọc view |
+| `REFRESH MATERIALIZED VIEW` không `CONCURRENTLY` | Cao trên matview, thấp trên bảng nguồn | `ACCESS EXCLUSIVE` trên matview (block đọc view); bảng nguồn chỉ `ACCESS SHARE` |
+| `REFRESH MATERIALIZED VIEW CONCURRENTLY` | Thấp trên matview, thấp trên bảng nguồn | `EXCLUSIVE` trên matview, vẫn cho đọc dữ liệu cũ; cần `UNIQUE` index, chậm hơn và gây bloat |
 | `UPDATE`/`DELETE` số lượng lớn | Trung bình–cao | Giữ row lock lâu, tạo bloat, tốn WAL/I/O |
 | `ADD FOREIGN KEY` trực tiếp | Trung bình–cao | Cần validate dữ liệu, có thể scan bảng |
 | `RENAME COLUMN`/`TABLE` | Thấp | Nhanh, lock mạnh nhưng rất ngắn |
