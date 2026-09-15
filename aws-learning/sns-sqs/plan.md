@@ -154,8 +154,18 @@ sed -e "s|PAYMENT_QUEUE_ARN_PLACEHOLDER|$PAYMENT_QUEUE_ARN|" \
 
 aws sqs set-queue-attributes \
     --queue-url $PAYMENT_QUEUE_URL \
-    --attributes Policy="$(cat payment-queue-policy-final.json)"
+    --attributes "$(jq -n --rawfile p payment-queue-policy-final.json '{Policy:$p}')"
 ```
+
+> ⚠️ **Không dùng `--attributes Policy="$(cat file.json)"`.** Cú pháp đó kích hoạt **shorthand parser**
+> của AWS CLI (`key=value,key=value`); JSON policy có dấu `,` và `"` bên trong nên parser vỡ ngay:
+> ```
+> Error parsing parameter '--attributes': Expected: '=', received: '"'
+> ```
+> Lệnh fail, queue **không có policy nào**, và SNS sẽ bị `AccessDenied` khi `sqs:SendMessage` —
+> message rơi im lặng, queue luôn rỗng mà không có lỗi gì báo về.
+> `jq -n --rawfile p file '{Policy:$p}'` sinh ra JSON hợp lệ với policy là chuỗi đã escape,
+> ép CLI dùng JSON parser thay vì shorthand parser.
 
 ### 2.2. Làm tương tự cho EmailQueue
 
@@ -166,8 +176,26 @@ sed -e "s|PAYMENT_QUEUE_ARN_PLACEHOLDER|$EMAIL_QUEUE_ARN|" \
 
 aws sqs set-queue-attributes \
     --queue-url $EMAIL_QUEUE_URL \
-    --attributes Policy="$(cat email-queue-policy-final.json)"
+    --attributes "$(jq -n --rawfile p email-queue-policy-final.json '{Policy:$p}')"
 ```
+
+### 2.2b. Verify policy đã lên thật
+
+Bước này **bắt buộc** — vì lỗi apply policy không làm hỏng bước nào sau đó,
+nó chỉ làm queue rỗng mãi mãi:
+
+```bash
+for Q in PaymentQueue EmailQueue; do
+    URL=$(aws sqs get-queue-url --queue-name $Q --query QueueUrl --output text)
+    echo "===== $Q"
+    aws sqs get-queue-attributes --queue-url "$URL" --attribute-names Policy \
+        --query Attributes.Policy --output text | python3 -m json.tool \
+        || echo "!!! QUEUE CHƯA CÓ POLICY - SNS sẽ không gửi được vào đây !!!"
+done
+```
+
+Kỳ vọng: mỗi queue in ra policy với `Principal.Service = sns.amazonaws.com`
+và `Resource` trỏ đúng ARN của **chính queue đó**.
 
 ### 2.3. Subscribe SQS vào SNS
 
@@ -407,6 +435,36 @@ aws sqs receive-message --queue-url $EMAIL_QUEUE_URL --max-number-of-messages 10
 ```
 
 > **Lưu ý:** Nếu Lambda trigger đã hoạt động, message sẽ bị Lambda "kéo" đi rất nhanh, có thể bạn không kịp thấy. Để quan sát, bạn có thể **tạm disable trigger** bằng cách xóa event source mapping, rồi publish lại.
+
+**Nếu đã xóa event source mapping mà queue vẫn rỗng**, phân biệt "queue rỗng thật" với "không kịp thấy":
+
+```bash
+URL=$(aws sqs get-queue-url --queue-name PaymentQueue --query QueueUrl --output text)
+aws sqs get-queue-attributes --queue-url "$URL" \
+    --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible
+```
+
+`ApproximateNumberOfMessagesNotVisible = 0` nghĩa là không có message in-flight → queue rỗng thật,
+không phải do `receive-message` short-poll trượt.
+
+Khi đó hỏi thẳng SNS xem nó giao hàng có thành công không:
+
+```bash
+for M in NumberOfMessagesPublished NumberOfNotificationsDelivered NumberOfNotificationsFailed; do
+    echo "--- $M"
+    aws cloudwatch get-metric-statistics \
+        --namespace AWS/SNS --metric-name $M \
+        --dimensions Name=TopicName,Value=OrderEventsTopic \
+        --start-time "$(date -u -v-3H +%Y-%m-%dT%H:%M:%S)" \
+        --end-time "$(date -u +%Y-%m-%dT%H:%M:%S)" \
+        --period 3600 --statistics Sum \
+        --query "sort_by(Datapoints,&Timestamp)[].{T:Timestamp,Sum:Sum}" --output text
+done
+```
+
+`NumberOfNotificationsFailed > 0` → SNS publish được nhưng giao thất bại, gần như luôn là **thiếu queue policy** (quay lại Bước 2.2b).
+Mỗi lần publish sẽ đếm 1 failed cho **mỗi** SQS subscription — 2 publish với 2 queue chưa có policy sẽ ra `Failed = 4`,
+trong khi `Delivered = 2` là phần Lambda C nhận được.
 
 ### 5.3. Xem log của 3 Lambda
 
