@@ -86,32 +86,58 @@ aws configure
 
 Project này có **rất nhiều ARN/ID**. Đóng terminal là mất sạch. Nên ghi ra file và `source` lại mỗi lần mở terminal mới.
 
-```bash
-mkdir -p ~/aws-fnb && cd ~/aws-fnb
+> ## ⚠️ Việc đầu tiên của MỌI tab terminal mới
+>
+> ```bash
+> cd <thu-muc-project> && source ./env.sh
+> echo "PROJECT=$PROJECT  VPC_ID=$VPC_ID  CLUSTER=$CLUSTER"
+> ```
+>
+> Ba giá trị phải hiện ra đầy đủ. Rỗng bất kỳ cái nào thì **dừng lại**, đừng chạy tiếp.
+>
+> Biến môi trường chỉ sống trong đúng shell đã tạo ra nó. Tab mới = shell mới = không có biến nào. Và `save FOO bar` cũng chỉ export vào shell đang chạy nó, tab khác không thấy.
+>
+> **Bỏ qua bước này thì shell không báo lỗi.** Nó lặng lẽ thay biến rỗng vào lệnh, rồi AWS CLI trả về một lỗi chẳng liên quan gì tới nguyên nhân thật:
+>
+> | Lỗi nhìn thấy | Nguyên nhân thật |
+> |---|---|
+> | `command not found: save` | chưa `source` — dấu hiệu sớm nhất |
+> | `argument --vpc-id: expected one argument` | `$VPC_ID` rỗng |
+> | `argument --pool-name: expected one argument` | `$PROJECT` rỗng → `-pool` bị hiểu là tên option |
+> | `Container.image should not be null or empty` | `$PRODUCT_IMAGE` rỗng lúc generate taskdef |
+> | `Invalid ARN` / `ValidationException` | một biến ARN nào đó rỗng |
+>
+> Nguy hiểm nhất là heredoc (`cat > file.json <<EOF`): biến rỗng ghi thẳng vào file, không một cảnh báo nào, và bạn chỉ phát hiện khi AWS từ chối file đó.
 
-cat > env.sh <<'EOF'
+Env đặt trong **chính thư mục project** (không phải `~/aws-fnb`) để mọi thứ đi theo git cùng code:
+
+```bash
+cd <thu-muc-project>
+
+cat > env.sh <<EOF
+FNB_ENV_FILE="\${FNB_ENV_FILE:-$PWD/env.sh}"
+EOF
+
+cat >> env.sh <<'EOF'
+
+save() { echo "export $1=$2" >> "$FNB_ENV_FILE"; export "$1=$2"; echo "$1 = $2"; }
+
 export AWS_REGION=ap-southeast-1
 export AWS_DEFAULT_REGION=$AWS_REGION
-export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 export PROJECT=fnb
 EOF
 
-source env.sh
+echo "export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)" >> env.sh
+
+source ./env.sh
 echo "Account: $ACCOUNT_ID / Region: $AWS_REGION"
 ```
 
-Quy ước từ đây: mỗi khi lấy được một giá trị mới, **append vào `env.sh`** bằng helper này:
+Heredoc đầu **không** nháy `EOF` để `$PWD` được bung ra thành đường dẫn thật. Heredoc sau **có** nháy để `$1`/`$2` trong hàm `save` giữ nguyên.
 
-```bash
-cat >> env.sh <<'EOF'
+Quy ước từ đây: mỗi khi lấy được một giá trị mới, dùng `save TEN_BIEN gia_tri` thay cho `export` — biến vừa export vào shell hiện tại, vừa được append vào `env.sh` để tab sau còn dùng.
 
-save() { echo "export $1=$2" >> ~/aws-fnb/env.sh; export $1=$2; echo "$1 = $2"; }
-EOF
-
-source env.sh
-```
-
-> Từ giờ dùng `save TEN_BIEN gia_tri` thay cho `export`, biến sẽ tự được lưu lại.
+> Di chuyển thư mục project thì sửa lại đúng dòng `FNB_ENV_FILE` ở đầu `env.sh`.
 
 ### 0.4. Lấy VPC và subnet mặc định
 
