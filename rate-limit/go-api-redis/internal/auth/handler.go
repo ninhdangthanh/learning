@@ -29,10 +29,6 @@ type refreshRequest struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
-type logoutRequest struct {
-	RefreshToken string `json:"refresh_token"`
-}
-
 type sessionResponse struct {
 	User   User      `json:"user"`
 	Tokens TokenPair `json:"tokens"`
@@ -105,35 +101,13 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 
 	tokens, err := h.service.Refresh(r.Context(), request.RefreshToken)
 	switch {
-	case errors.Is(err, ErrTokenReused):
-		httpx.WriteError(w, http.StatusUnauthorized, "token_reused",
-			"This refresh token was already used. All sessions have been revoked.")
-	case errors.Is(err, ErrNoSession), errors.Is(err, ErrInvalidToken), errors.Is(err, ErrExpiredToken):
+	case errors.Is(err, ErrInvalidToken), errors.Is(err, ErrExpiredToken), errors.Is(err, ErrUserNotFound):
 		httpx.WriteError(w, http.StatusUnauthorized, "invalid_refresh_token", "Refresh token is not valid.")
 	case err != nil:
 		httpx.WriteError(w, http.StatusInternalServerError, "refresh_failed", "Cannot refresh the session.")
 	default:
 		httpx.WriteJSON(w, http.StatusOK, tokens)
 	}
-}
-
-func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
-	identity, _ := IdentityFrom(r.Context())
-
-	var request logoutRequest
-	if r.ContentLength > 0 {
-		if err := httpx.DecodeJSON(w, r, &request); err != nil {
-			httpx.WriteError(w, http.StatusBadRequest, "invalid_body", err.Error())
-			return
-		}
-	}
-
-	if err := h.service.Logout(r.Context(), identity, request.RefreshToken); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, "logout_failed", "Cannot sign out right now.")
-		return
-	}
-
-	httpx.WriteJSON(w, http.StatusNoContent, nil)
 }
 
 func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {

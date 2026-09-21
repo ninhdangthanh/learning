@@ -58,17 +58,8 @@ step "List notes"
 call "${API_URL}/api/notes" -H "Authorization: Bearer ${ACCESS}"
 echo
 
-step "Rotate the refresh token"
-ROTATED=$(call -X POST "${API_URL}/auth/refresh" -d "{\"refresh_token\":\"${REFRESH}\"}")
-echo "${ROTATED}"
-ROTATED_REFRESH=$(printf '%s' "${ROTATED}" | json refresh_token)
-
-step "Replay the old refresh token (expect token_reused)"
+step "Exchange the refresh token for a new pair"
 call -X POST "${API_URL}/auth/refresh" -d "{\"refresh_token\":\"${REFRESH}\"}"
-echo
-
-step "Every session is revoked after reuse detection (expect invalid_refresh_token)"
-call -X POST "${API_URL}/auth/refresh" -d "{\"refresh_token\":\"${ROTATED_REFRESH}\"}"
 echo
 
 step "Fixed window on /auth/register: 5 per hour per IP"

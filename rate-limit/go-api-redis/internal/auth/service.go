@@ -29,7 +29,7 @@ func (s *Service) Register(ctx context.Context, email, password string) (User, T
 		return User{}, TokenPair{}, err
 	}
 
-	pair, err := s.issuePair(ctx, user)
+	pair, err := s.issuePair(user)
 	if err != nil {
 		return User{}, TokenPair{}, err
 	}
@@ -48,7 +48,7 @@ func (s *Service) Login(ctx context.Context, email, password string) (User, Toke
 		return User{}, TokenPair{}, ErrInvalidCredentials
 	}
 
-	pair, err := s.issuePair(ctx, user)
+	pair, err := s.issuePair(user)
 	if err != nil {
 		return User{}, TokenPair{}, err
 	}
@@ -61,58 +61,22 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (TokenPair, 
 		return TokenPair{}, err
 	}
 
-	err = s.store.ConsumeSession(ctx, claims.Subject, claims.ID, s.tokens.RefreshTTL())
-	if errors.Is(err, ErrTokenReused) {
-		if revokeErr := s.store.RevokeAllSessions(ctx, claims.Subject); revokeErr != nil {
-			return TokenPair{}, revokeErr
-		}
-		return TokenPair{}, ErrTokenReused
-	}
-	if err != nil {
-		return TokenPair{}, err
-	}
-
 	user, err := s.store.UserByID(ctx, claims.Subject)
 	if err != nil {
 		return TokenPair{}, err
 	}
 
-	return s.issuePair(ctx, user)
+	return s.issuePair(user)
 }
 
-func (s *Service) Logout(ctx context.Context, identity Identity, refreshToken string) error {
-	if err := s.store.DenyAccessToken(ctx, identity.AccessID, s.tokens.AccessTTL()); err != nil {
-		return err
-	}
-
-	if refreshToken == "" {
-		return s.store.RevokeAllSessions(ctx, identity.UserID)
-	}
-
-	claims, err := s.tokens.Parse(refreshToken, TokenTypeRefresh)
-	if err != nil || claims.Subject != identity.UserID {
-		return s.store.RevokeAllSessions(ctx, identity.UserID)
-	}
-
-	err = s.store.ConsumeSession(ctx, claims.Subject, claims.ID, s.tokens.RefreshTTL())
-	if errors.Is(err, ErrNoSession) || errors.Is(err, ErrTokenReused) {
-		return nil
-	}
-	return err
-}
-
-func (s *Service) issuePair(ctx context.Context, user User) (TokenPair, error) {
+func (s *Service) issuePair(user User) (TokenPair, error) {
 	accessToken, accessClaims, err := s.tokens.Issue(user.ID, user.Role, TokenTypeAccess)
 	if err != nil {
 		return TokenPair{}, err
 	}
 
-	refreshToken, refreshClaims, err := s.tokens.Issue(user.ID, user.Role, TokenTypeRefresh)
+	refreshToken, _, err := s.tokens.Issue(user.ID, user.Role, TokenTypeRefresh)
 	if err != nil {
-		return TokenPair{}, err
-	}
-
-	if err := s.store.SaveSession(ctx, user.ID, refreshClaims.ID, s.tokens.RefreshTTL()); err != nil {
 		return TokenPair{}, err
 	}
 

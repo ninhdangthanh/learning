@@ -40,14 +40,6 @@ func NewTokenManager(config TokenManagerConfig) *TokenManager {
 	return &TokenManager{config: config}
 }
 
-func (m *TokenManager) AccessTTL() time.Duration {
-	return m.config.AccessTTL
-}
-
-func (m *TokenManager) RefreshTTL() time.Duration {
-	return m.config.RefreshTTL
-}
-
 func (m *TokenManager) Issue(userID, role, tokenType string) (string, Claims, error) {
 	ttl := m.config.AccessTTL
 	if tokenType == TokenTypeRefresh {

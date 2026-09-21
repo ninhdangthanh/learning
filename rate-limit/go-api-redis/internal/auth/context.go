@@ -7,9 +7,8 @@ type contextKey struct{}
 var identityKey contextKey
 
 type Identity struct {
-	UserID   string
-	Role     string
-	AccessID string
+	UserID string
+	Role   string
 }
 
 func WithIdentity(ctx context.Context, identity Identity) context.Context {

@@ -58,7 +58,6 @@ func run(logger *slog.Logger) error {
 	router := api.NewRouter(api.Dependencies{
 		Config:      settings,
 		Redis:       client,
-		AuthStore:   authStore,
 		Tokens:      tokens,
 		AuthHandler: auth.NewHandler(auth.NewService(authStore, tokens), authStore),
 		Notes:       notes.NewHandler(notes.NewStore(client)),

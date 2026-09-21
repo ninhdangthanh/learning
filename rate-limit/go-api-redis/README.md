@@ -1,6 +1,6 @@
 # Go API + Redis
 
-Bản "chạy thật" của các thuật toán rate limit trong repo này: một REST API viết bằng Go, dùng Redis làm nơi lưu **toàn bộ** state — user, session, note, counter rate limit. Không có database nào khác.
+Bản "chạy thật" của các thuật toán rate limit trong repo này: một REST API viết bằng Go, dùng Redis làm nơi lưu **toàn bộ** state — user, note, counter rate limit. Không có database nào khác.
 
 Một binary (`cmd/api`), một Redis.
 
@@ -11,7 +11,7 @@ Một binary (`cmd/api`), một Redis.
 ```bash
 cp .env.example .env
 make up          # redis + api qua docker compose
-make demo        # đăng ký → tạo note → xoay refresh token → chạm trần từng limiter
+make demo        # đăng ký → tạo note → đổi refresh token → chạm trần từng limiter
 make load-test   # bắn 70 request để thấy sliding window chặn ở đâu
 ```
 
@@ -59,18 +59,16 @@ Retry-After: 41
 
 ## JWT
 
-Access token stateless, refresh token có state trong Redis.
+Cả hai token đều stateless. Redis không giữ session nào.
 
 | Thành phần | Chi tiết |
 |---|---|
 | Access token | HS256, mặc định 15 phút, claims `sub` `jti` `typ` `role` `iss` `aud` `exp` `nbf` `iat` |
-| Refresh token | mặc định 7 ngày, có **rotation**: mỗi lần refresh sinh cặp mới, token cũ bị xoá ngay |
-| Reuse detection | refresh token đã dùng mà bị gửi lại ⇒ coi như bị đánh cắp ⇒ **huỷ toàn bộ session** của user đó |
-| Logout | xoá refresh session + đẩy `jti` của access token vào denylist với TTL đúng bằng thời gian sống còn lại |
-
-Không dùng token version. Việc thu hồi access token được làm bằng denylist theo `jti`: key `deny:access:{jti}` tự hết hạn cùng lúc token hết hạn, nên denylist không bao giờ phình to. Hot path chỉ tốn một `EXISTS`.
+| Refresh token | mặc định 7 ngày, gửi lên `/auth/refresh` để đổi lấy cặp token mới |
 
 Verify hai tầng: token phải đúng chữ ký **và** đúng `typ`. Một access token không thể đem đi refresh, và ngược lại.
+
+**Không có thu hồi** — không rotation, không reuse detection, không denylist, không logout phía server. Đây là lựa chọn có chủ đích để repo này tập trung vào rate limit; phần token chuyên sâu nằm ở project khác. Hệ quả: token bị lộ sẽ dùng được tới khi hết hạn, và hàng rào duy nhất là TTL ngắn của access token (`ACCESS_TOKEN_TTL`). Đổi lại, `RequireAuth` chỉ verify chữ ký, không chạm Redis lần nào.
 
 ---
 
@@ -82,9 +80,10 @@ Verify hai tầng: token phải đúng chữ ký **và** đúng `typ`. Một acc
 |---|---|---|---|
 | `POST` | `/auth/register` | fixed window | Tạo tài khoản, trả về luôn cặp token |
 | `POST` | `/auth/login` | token bucket | Đăng nhập |
-| `POST` | `/auth/refresh` | token bucket riêng | Rotation + reuse detection |
-| `POST` | `/auth/logout` | — | Denylist access token, xoá refresh session |
+| `POST` | `/auth/refresh` | token bucket riêng | Đổi refresh token lấy cặp token mới |
 | `GET` | `/auth/me` | — | Thông tin tài khoản |
+
+Không có `/auth/logout`: client tự xoá token của mình.
 
 ### Notes
 
@@ -108,10 +107,6 @@ Tất cả nằm sau `RequireAuth` và sliding window của `/api/*`.
 |---|---|---|
 | `user:{id}` | Hash | email, password_hash, role, created_at |
 | `user:email:{email}` | String | id, dùng `SETNX` để đảm bảo email không trùng |
-| `refresh:{jti}` | Hash | session của refresh token, TTL theo token |
-| `user:{id}:refresh` | Set | index jti để revoke toàn bộ session |
-| `refresh:used:{jti}` | String | dấu vết refresh đã dùng, dùng để phát hiện reuse |
-| `deny:access:{jti}` | String | denylist access token, TTL tự hết |
 | `note:{id}` | Hash | nội dung note |
 | `user:{id}:notes` | ZSET | index note theo thời gian tạo |
 | `rl:fw:{scope}:{key}:{window}` | String | counter fixed window |
@@ -145,7 +140,7 @@ make test
 Dùng `miniredis` nên không cần Redis thật:
 
 * **`internal/ratelimit`** — mỗi thuật toán chặn đúng ngưỡng, key này không ảnh hưởng key kia, token bucket hồi token theo thời gian.
-* **`internal/auth`** — email trùng bị chặn, sai mật khẩu bị từ chối, refresh xoay vòng, dùng lại refresh cũ thì mọi session bị thu hồi, logout đẩy được access token vào denylist, access token không dùng thay refresh được.
+* **`internal/auth`** — email trùng bị chặn, sai mật khẩu bị từ chối, refresh trả về cặp token mới, refresh token cũ vẫn dùng lại được (đúng như thiết kế không thu hồi), refresh của user đã biến mất bị từ chối, access token không dùng thay refresh được.
 
 ---
 
@@ -154,7 +149,7 @@ Dùng `miniredis` nên không cần Redis thật:
 ```
 cmd/api              server REST
 internal/api         router, wiring middleware
-internal/auth        JWT, password, session store, middleware
+internal/auth        JWT, password, user store, middleware
 internal/ratelimit   3 limiter + Lua script + middleware
 internal/notes       CRUD trên Redis
 internal/config      đọc env

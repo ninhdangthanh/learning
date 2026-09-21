@@ -18,7 +18,6 @@ import (
 type Dependencies struct {
 	Config      config.Config
 	Redis       *redis.Client
-	AuthStore   *auth.Store
 	Tokens      *auth.TokenManager
 	AuthHandler *auth.Handler
 	Notes       *notes.Handler
@@ -63,14 +62,13 @@ func NewRouter(deps Dependencies) http.Handler {
 			Post("/refresh", deps.AuthHandler.Refresh)
 
 		r.Group(func(private chi.Router) {
-			private.Use(auth.RequireAuth(deps.AuthStore, deps.Tokens))
-			private.Post("/logout", deps.AuthHandler.Logout)
+			private.Use(auth.RequireAuth(deps.Tokens))
 			private.Get("/me", deps.AuthHandler.Me)
 		})
 	})
 
 	router.Route("/api", func(r chi.Router) {
-		r.Use(auth.RequireAuth(deps.AuthStore, deps.Tokens))
+		r.Use(auth.RequireAuth(deps.Tokens))
 		r.Use(ratelimit.Middleware(apiLimiter, keyByIdentity, deps.Logger))
 
 		r.Mount("/notes", deps.Notes.Routes(

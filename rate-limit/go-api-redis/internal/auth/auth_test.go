@@ -10,14 +10,13 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func newTestService(t *testing.T) (*Service, *Store) {
+func newTestService(t *testing.T) *Service {
 	t.Helper()
 
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
-	store := NewStore(client)
 	tokens := NewTokenManager(TokenManagerConfig{
 		Secret:     []byte("test-secret-value-32-characters"),
 		Issuer:     "test",
@@ -26,11 +25,11 @@ func newTestService(t *testing.T) (*Service, *Store) {
 		RefreshTTL: time.Hour,
 	})
 
-	return NewService(store, tokens), store
+	return NewService(NewStore(client), tokens)
 }
 
 func TestRegisterRejectsDuplicateEmail(t *testing.T) {
-	service, _ := newTestService(t)
+	service := newTestService(t)
 	ctx := context.Background()
 
 	if _, _, err := service.Register(ctx, "user@example.com", "password123"); err != nil {
@@ -44,7 +43,7 @@ func TestRegisterRejectsDuplicateEmail(t *testing.T) {
 }
 
 func TestLoginRejectsWrongPassword(t *testing.T) {
-	service, _ := newTestService(t)
+	service := newTestService(t)
 	ctx := context.Background()
 
 	if _, _, err := service.Register(ctx, "user@example.com", "password123"); err != nil {
@@ -56,8 +55,8 @@ func TestLoginRejectsWrongPassword(t *testing.T) {
 	}
 }
 
-func TestRefreshRotatesTokens(t *testing.T) {
-	service, _ := newTestService(t)
+func TestRefreshIssuesNewPair(t *testing.T) {
+	service := newTestService(t)
 	ctx := context.Background()
 
 	_, pair, err := service.Register(ctx, "user@example.com", "password123")
@@ -65,17 +64,17 @@ func TestRefreshRotatesTokens(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 
-	rotated, err := service.Refresh(ctx, pair.RefreshToken)
+	next, err := service.Refresh(ctx, pair.RefreshToken)
 	if err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
-	if rotated.RefreshToken == pair.RefreshToken {
-		t.Fatal("refresh token should be rotated")
+	if next.AccessToken == pair.AccessToken || next.RefreshToken == pair.RefreshToken {
+		t.Fatal("refresh should hand back a brand new pair")
 	}
 }
 
-func TestRefreshReuseRevokesEverySession(t *testing.T) {
-	service, _ := newTestService(t)
+func TestRefreshTokenStaysValidAfterUse(t *testing.T) {
+	service := newTestService(t)
 	ctx := context.Background()
 
 	_, pair, err := service.Register(ctx, "user@example.com", "password123")
@@ -83,54 +82,29 @@ func TestRefreshReuseRevokesEverySession(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 
-	rotated, err := service.Refresh(ctx, pair.RefreshToken)
-	if err != nil {
+	if _, err := service.Refresh(ctx, pair.RefreshToken); err != nil {
 		t.Fatalf("first refresh: %v", err)
 	}
-
-	if _, err := service.Refresh(ctx, pair.RefreshToken); !errors.Is(err, ErrTokenReused) {
-		t.Fatalf("expected ErrTokenReused, got %v", err)
-	}
-
-	if _, err := service.Refresh(ctx, rotated.RefreshToken); !errors.Is(err, ErrNoSession) {
-		t.Fatalf("rotated token should be revoked too, got %v", err)
+	if _, err := service.Refresh(ctx, pair.RefreshToken); err != nil {
+		t.Fatalf("the same refresh token must still work, got %v", err)
 	}
 }
 
-func TestLogoutDeniesAccessToken(t *testing.T) {
-	service, store := newTestService(t)
-	ctx := context.Background()
+func TestRefreshRejectsUnknownUser(t *testing.T) {
+	service := newTestService(t)
 
-	_, pair, err := service.Register(ctx, "user@example.com", "password123")
+	token, _, err := service.tokens.Issue("missing-user", "user", TokenTypeRefresh)
 	if err != nil {
-		t.Fatalf("register: %v", err)
+		t.Fatalf("issue: %v", err)
 	}
 
-	claims, err := service.tokens.Parse(pair.AccessToken, TokenTypeAccess)
-	if err != nil {
-		t.Fatalf("parse access token: %v", err)
-	}
-
-	identity := Identity{UserID: claims.Subject, AccessID: claims.ID}
-	if err := service.Logout(ctx, identity, pair.RefreshToken); err != nil {
-		t.Fatalf("logout: %v", err)
-	}
-
-	denied, err := store.IsAccessTokenDenied(ctx, claims.ID)
-	if err != nil {
-		t.Fatalf("denylist lookup: %v", err)
-	}
-	if !denied {
-		t.Fatal("access token should be on the denylist after logout")
-	}
-
-	if _, err := service.Refresh(ctx, pair.RefreshToken); err == nil {
-		t.Fatal("refresh token should not work after logout")
+	if _, err := service.Refresh(context.Background(), token); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("expected ErrUserNotFound, got %v", err)
 	}
 }
 
 func TestParseRejectsWrongTokenType(t *testing.T) {
-	service, _ := newTestService(t)
+	service := newTestService(t)
 
 	_, pair, err := service.Register(context.Background(), "user@example.com", "password123")
 	if err != nil {

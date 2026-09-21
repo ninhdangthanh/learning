@@ -17,7 +17,7 @@ func bearerToken(r *http.Request) string {
 	return strings.TrimSpace(header[len(prefix):])
 }
 
-func RequireAuth(store *Store, tokens *TokenManager) func(http.Handler) http.Handler {
+func RequireAuth(tokens *TokenManager) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			raw := bearerToken(r)
@@ -36,17 +36,7 @@ func RequireAuth(store *Store, tokens *TokenManager) func(http.Handler) http.Han
 				return
 			}
 
-			denied, err := store.IsAccessTokenDenied(r.Context(), claims.ID)
-			if err != nil {
-				httpx.WriteError(w, http.StatusServiceUnavailable, "auth_unavailable", "Cannot verify token right now.")
-				return
-			}
-			if denied {
-				httpx.WriteError(w, http.StatusUnauthorized, "token_revoked", "Access token has been revoked.")
-				return
-			}
-
-			identity := Identity{UserID: claims.Subject, Role: claims.Role, AccessID: claims.ID}
+			identity := Identity{UserID: claims.Subject, Role: claims.Role}
 			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), identity)))
 		})
 	}
