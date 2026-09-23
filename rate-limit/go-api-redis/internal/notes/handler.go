@@ -42,13 +42,16 @@ type listResponse struct {
 	Limit  int64  `json:"limit"`
 }
 
-func (h *Handler) Routes(createLimiter func(http.Handler) http.Handler) chi.Router {
+func (h *Handler) Routes(writeLimiter func(http.Handler) http.Handler) chi.Router {
 	router := chi.NewRouter()
 	router.Get("/", h.List)
-	router.With(createLimiter).Post("/", h.Create)
 	router.Get("/{noteID}", h.Get)
-	router.Patch("/{noteID}", h.Update)
-	router.Delete("/{noteID}", h.Delete)
+	router.Group(func(write chi.Router) {
+		write.Use(writeLimiter)
+		write.Post("/", h.Create)
+		write.Patch("/{noteID}", h.Update)
+		write.Delete("/{noteID}", h.Delete)
+	})
 	return router
 }
 
