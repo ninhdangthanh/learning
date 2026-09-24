@@ -1,0 +1,16 @@
+services:
+  order-service:
+    build: ./order-service
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      INSTANCE_ID: "order-local"
+
+  product-service:
+    build: ./product-service
+    ports:
+      - "8081:8081"
+    environment:
+      PORT: "8081"
+      INSTANCE_ID: "product-local"
