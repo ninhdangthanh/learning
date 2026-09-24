@@ -340,3 +340,58 @@ func TestHandlesManyConcurrentConnections(t *testing.T) {
 	}
 	waitForNoActiveConnections(t, handler)
 }
+
+func dialWithOrigin(url, origin string) (*websocket.Conn, *http.Response, error) {
+	header := http.Header{}
+	if origin != "" {
+		header.Set("Origin", origin)
+	}
+	return websocket.DefaultDialer.Dial(url, header)
+}
+
+func TestOriginPolicy(t *testing.T) {
+	const extensionOrigin = "chrome-extension://abcdefghijklmnop"
+
+	tests := []struct {
+		name           string
+		allowedOrigins []string
+		origin         func(serverURL string) string
+		wantAccepted   bool
+	}{
+		{"no origin header", nil, func(string) string { return "" }, true},
+		{"same origin", nil, func(serverURL string) string { return serverURL }, true},
+		{"foreign origin not allowed", nil, func(string) string { return extensionOrigin }, false},
+		{"foreign origin in allowlist", []string{extensionOrigin}, func(string) string { return extensionOrigin }, true},
+		{"wildcard allows any origin", []string{"*"}, func(string) string { return "http://evil.example" }, true},
+		{"other origin not in allowlist", []string{extensionOrigin}, func(string) string { return "http://evil.example" }, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.AllowedOrigins = tt.allowedOrigins
+			handler := NewHandler(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			server := httptest.NewServer(handler)
+			defer server.Close()
+			url := "ws" + strings.TrimPrefix(server.URL, "http")
+
+			conn, resp, err := dialWithOrigin(url, tt.origin(server.URL))
+			if conn != nil {
+				defer conn.Close()
+			}
+
+			if tt.wantAccepted {
+				if err != nil {
+					t.Fatalf("dial: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("dial succeeded, want rejection")
+			}
+			if resp == nil || resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("response = %v, want 403", resp)
+			}
+		})
+	}
+}

@@ -1,10 +1,13 @@
 .PHONY: run debug build test tidy
 
+WS_ALLOWED_ORIGINS ?= chrome-extension://gobngblklhkgmjhbpbdlkglbhhlafjnh
+ORIGINS ?= $(WS_ALLOWED_ORIGINS)
+
 run:
-	go run ./cmd/server
+	go run ./cmd/server -origins "*"
 
 debug:
-	go run ./cmd/server -debug
+	go run ./cmd/server -debug -origins "*"
 
 build:
 	go build -o bin/server ./cmd/server

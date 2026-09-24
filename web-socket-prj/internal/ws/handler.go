@@ -23,6 +23,7 @@ func NewHandler(cfg Config, logger *slog.Logger) *Handler {
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
+			CheckOrigin:     newOriginChecker(cfg.AllowedOrigins),
 		},
 	}
 }
@@ -34,7 +35,7 @@ func (h *Handler) ActiveConnections() int64 {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		h.logger.Info("websocket upgrade rejected", "remote_addr", r.RemoteAddr, "error", err)
+		h.logger.Info("websocket upgrade rejected", "remote_addr", r.RemoteAddr, "origin", r.Header.Get("Origin"), "error", err)
 		return
 	}
 

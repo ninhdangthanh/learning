@@ -8,6 +8,7 @@ type Config struct {
 	PingPeriod     time.Duration
 	MaxMessageSize int64
 	SendBufferSize int
+	AllowedOrigins []string
 }
 
 func DefaultConfig() Config {
