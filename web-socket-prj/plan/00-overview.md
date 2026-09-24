@@ -9,7 +9,7 @@ Input: `idea.md`. Folder `plan/` tách mỗi phase thành 1 file, mỗi file đ�
 | Phase | File | Trạng thái |
 | --- | --- | --- |
 | 1 — WebSocket Fundamentals | `phase-1-websocket-fundamentals.md` | ✅ Done |
-| 2 — Concurrent Chat (Hub) | `phase-2-concurrent-chat.md` | ⬜ Todo |
+| 2 — Concurrent Chat (Hub) | `phase-2-concurrent-chat.md` | ✅ Done |
 | 3 — Room | `phase-3-room.md` | ⬜ Todo |
 | 4 — Authentication (JWT) | `phase-4-authentication.md` | ⬜ Todo |
 | 5 — Authorization (membership) | `phase-5-authorization.md` | ⬜ Todo |

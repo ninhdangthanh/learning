@@ -137,11 +137,11 @@ Test hub nên có `Hub.ClientCount()` đi qua channel (request/response) — **k
 
 ## Acceptance (idea.md §12 — Concurrency)
 
-- [ ] Nhiều client connect đồng thời
-- [ ] Message của 1 client broadcast tới nhiều client
-- [ ] Client đồng thời không làm hỏng shared state
-- [ ] Register/unregister concurrency-safe
-- [ ] `go test -race` không báo race
+- [x] Nhiều client connect đồng thời
+- [x] Message của 1 client broadcast tới nhiều client
+- [x] Client đồng thời không làm hỏng shared state
+- [x] Register/unregister concurrency-safe
+- [x] `go test -race` không báo race
 
 ---
 

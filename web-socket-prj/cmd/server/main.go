@@ -24,11 +24,17 @@ func main() {
 
 	logger := newLogger(*debug)
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	hub := ws.NewHub(logger)
+	go hub.Run(ctx)
+
 	wsConfig := ws.DefaultConfig()
 	wsConfig.AllowedOrigins = parseOrigins(*origins)
 
 	mux := http.NewServeMux()
-	mux.Handle("GET /ws", ws.NewHandler(wsConfig, logger))
+	mux.Handle("GET /ws", ws.NewHandler(wsConfig, hub, logger))
 	mux.Handle("GET /", http.FileServer(http.Dir(*webDir)))
 
 	server := &http.Server{
@@ -36,9 +42,6 @@ func main() {
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	go func() {
 		logger.Info("server listening", "addr", *addr, "allowed_origins", wsConfig.AllowedOrigins)

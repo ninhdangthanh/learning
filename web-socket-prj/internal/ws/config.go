@@ -18,6 +18,6 @@ func DefaultConfig() Config {
 		PongWait:       pongWait,
 		PingPeriod:     pongWait * 9 / 10,
 		MaxMessageSize: 4096,
-		SendBufferSize: 16,
+		SendBufferSize: 64,
 	}
 }

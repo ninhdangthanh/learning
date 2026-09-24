@@ -10,15 +10,17 @@ import (
 
 type Handler struct {
 	cfg      Config
+	hub      *Hub
 	logger   *slog.Logger
 	upgrader websocket.Upgrader
 	nextID   atomic.Uint64
 	active   atomic.Int64
 }
 
-func NewHandler(cfg Config, logger *slog.Logger) *Handler {
+func NewHandler(cfg Config, hub *Hub, logger *slog.Logger) *Handler {
 	return &Handler{
 		cfg:    cfg,
+		hub:    hub,
 		logger: logger,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
@@ -39,12 +41,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c := newConnection(h.nextID.Add(1), conn, h.cfg, h.logger)
+	client := newClient(h.nextID.Add(1), h.hub, conn, h.cfg, h.logger)
+	if !h.hub.Register(client) {
+		client.closeWith(websocket.CloseGoingAway, "server shutting down")
+	}
 	h.active.Add(1)
-	c.logger.Info("connection opened", "active", h.active.Load())
+	client.logger.Info("connection opened", "active", h.active.Load())
 
-	c.run()
+	client.run()
 
 	remaining := h.active.Add(-1)
-	c.logger.Info("connection closed", "active", remaining)
+	client.logger.Info("connection closed", "active", remaining)
 }
