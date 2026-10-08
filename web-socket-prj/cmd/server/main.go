@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"log/slog"
@@ -35,6 +36,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /ws", ws.NewHandler(wsConfig, hub, logger))
+	mux.Handle("GET /debug/stats", statsHandler(hub, logger))
 	mux.Handle("GET /", http.FileServer(http.Dir(*webDir)))
 
 	server := &http.Server{
@@ -58,6 +60,15 @@ func main() {
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown", "error", err)
+	}
+}
+
+func statsHandler(hub *ws.Hub, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(hub.Stats()); err != nil {
+			logger.Warn("write stats response", "error", err)
+		}
 	}
 }
 

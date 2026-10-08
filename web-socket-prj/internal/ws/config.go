@@ -17,7 +17,7 @@ func DefaultConfig() Config {
 		WriteWait:      10 * time.Second,
 		PongWait:       pongWait,
 		PingPeriod:     pongWait * 9 / 10,
-		MaxMessageSize: 4096,
+		MaxMessageSize: 10 * 1024,
 		SendBufferSize: 64,
 	}
 }

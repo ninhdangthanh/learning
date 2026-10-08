@@ -30,6 +30,7 @@ type Client struct {
 	stopOnce    sync.Once
 	closeCode   int
 	closeReason string
+	rooms       map[string]struct{}
 }
 
 func newClient(id uint64, hub *Hub, conn *websocket.Conn, cfg Config, logger *slog.Logger) *Client {
@@ -43,6 +44,7 @@ func newClient(id uint64, hub *Hub, conn *websocket.Conn, cfg Config, logger *sl
 		done:       make(chan struct{}),
 		readerDone: make(chan struct{}),
 		writerDone: make(chan struct{}),
+		rooms:      make(map[string]struct{}),
 	}
 }
 
@@ -132,23 +134,30 @@ func (c *Client) handleText(payload []byte) {
 		return
 	}
 
-	message, err := decodeInboundMessage(payload)
-	if err != nil {
-		c.logger.Info("malformed message", "error", err)
-		c.reply(newErrorMessage(ErrorCodeMalformedMessage, err.Error()))
+	envelope, protoErr := decodeInbound(payload)
+	if protoErr != nil {
+		c.logger.Info("inbound message rejected", "code", protoErr.Code, "error", protoErr.Message)
+		c.reply(protoErr)
 		return
 	}
 
-	c.logger.Debug("text frame received", "message", message.Message)
-	c.publish(message.Message)
+	c.logger.Debug("text frame received", "type", envelope.Type, "room_id", envelope.RoomID)
+	switch envelope.Type {
+	case messageTypeJoinRoom:
+		c.hub.Join(c, envelope.RoomID)
+	case messageTypeLeaveRoom:
+		c.hub.Leave(c, envelope.RoomID)
+	case messageTypeChat:
+		c.publish(envelope.RoomID, envelope.Content)
+	}
 }
 
-func (c *Client) publish(text string) {
-	payload, ok := c.encode(newChatMessage(c.senderID(), text, time.Now().UTC()))
+func (c *Client) publish(roomID, content string) {
+	payload, ok := c.encode(newOutboundMessage(roomID, c.senderID(), content, time.Now().UTC()))
 	if !ok {
 		return
 	}
-	c.hub.Broadcast(payload)
+	c.hub.Publish(c, roomID, payload)
 }
 
 func (c *Client) reply(value any) {

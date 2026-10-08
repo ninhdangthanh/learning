@@ -6,25 +6,40 @@
   <title>WS Chat Client</title>
   <style>
     body { font-family: ui-monospace, Menlo, monospace; max-width: 820px; margin: 24px auto; padding: 0 16px; }
-    .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
-    input { flex: 1; min-width: 200px; padding: 6px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
+    input, select { flex: 1; min-width: 160px; padding: 6px; }
     button { padding: 6px 10px; cursor: pointer; }
     #status { font-weight: bold; }
+    #rooms { display: flex; gap: 6px; flex-wrap: wrap; }
+    .room { border: 1px solid #0057b8; border-radius: 12px; padding: 2px 8px; font-size: 12px; color: #0057b8; }
     #log { border: 1px solid #ccc; height: 420px; overflow-y: auto; padding: 8px; white-space: pre-wrap; font-size: 13px; }
     .out { color: #0057b8; } .in { color: #107c10; } .sys { color: #777; } .err { color: #c50f1f; }
   </style>
 </head>
 <body>
-  <h2>Phase 2 — Concurrent Chat</h2>
-  <p class="sys">Mở 2–3 tab rồi gửi từ 1 tab: mọi tab đều nhận được.</p>
+  <h2>Phase 3 — Rooms</h2>
+  <p class="sys">Mở 3 tab, join các room khác nhau: message chỉ tới tab đã join room đó. Xem <a href="/debug/stats" target="_blank">/debug/stats</a>.</p>
   <div class="row">
     <button id="connect">Connect</button>
     <button id="disconnect">Disconnect</button>
     <span>Status: <span id="status">closed</span></span>
   </div>
   <div class="row">
+    <input id="roomInput" value="room-123" placeholder="room_id">
+    <button id="join">Join</button>
+    <button id="leave">Leave</button>
+  </div>
+  <div class="row">
+    <span>Joined:</span>
+    <span id="rooms"><span class="sys">(none)</span></span>
+  </div>
+  <div class="row">
+    <select id="targetRoom"></select>
     <input id="text" value="hello">
-    <button id="sendJson">Send JSON</button>
+    <button id="sendMessage">Send</button>
+  </div>
+  <div class="row">
+    <button id="sendNotJoined">Send to unjoined room</button>
     <button id="sendBinary">Send binary</button>
     <button id="sendMalformed">Send malformed</button>
     <button id="sendTooBig">Send oversized</button>
@@ -34,7 +49,11 @@
   <script>
     const logBox = document.getElementById("log");
     const statusLabel = document.getElementById("status");
+    const roomInput = document.getElementById("roomInput");
+    const roomsBox = document.getElementById("rooms");
+    const targetRoom = document.getElementById("targetRoom");
     const textInput = document.getElementById("text");
+    const joinedRooms = new Set();
     let socket = null;
 
     function log(kind, text) {
@@ -43,6 +62,24 @@
       line.textContent = `${new Date().toLocaleTimeString()} ${text}`;
       logBox.appendChild(line);
       logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    function renderRooms() {
+      roomsBox.replaceChildren();
+      targetRoom.replaceChildren();
+      if (joinedRooms.size === 0) {
+        const empty = document.createElement("span");
+        empty.className = "sys";
+        empty.textContent = "(none)";
+        roomsBox.appendChild(empty);
+      }
+      for (const roomID of [...joinedRooms].sort()) {
+        const chip = document.createElement("span");
+        chip.className = "room";
+        chip.textContent = roomID;
+        roomsBox.appendChild(chip);
+        targetRoom.appendChild(new Option(roomID, roomID));
+      }
     }
 
     function isOpen() {
@@ -62,25 +99,37 @@
       socket.onerror = () => log("err", "socket error");
       socket.onclose = (event) => {
         statusLabel.textContent = "closed";
+        joinedRooms.clear();
+        renderRooms();
         log("sys", `closed code=${event.code} reason="${event.reason}" clean=${event.wasClean}`);
       };
-      socket.onmessage = (event) => {
-        if (event.data instanceof ArrayBuffer) {
-          const bytes = Array.from(new Uint8Array(event.data)).map((b) => b.toString(16).padStart(2, "0"));
-          log("in", `← binary [${bytes.join(" ")}]`);
-          return;
-        }
-        log("in", describeIncoming(event.data));
-      };
+      socket.onmessage = (event) => handleIncoming(event.data);
     }
 
-    function describeIncoming(raw) {
-      try {
-        const data = JSON.parse(raw);
-        if (data.type === "message") return `← [${data.sender_id}] ${data.message}`;
-        if (data.type === "error") return `← error ${data.code}: ${data.message}`;
-      } catch (_) {}
-      return `← ${raw}`;
+    function handleIncoming(raw) {
+      let data;
+      try { data = JSON.parse(raw); } catch (_) { log("in", `← ${raw}`); return; }
+
+      switch (data.type) {
+        case "joined":
+          joinedRooms.add(data.room_id);
+          renderRooms();
+          log("sys", `← joined ${data.room_id}`);
+          return;
+        case "left":
+          joinedRooms.delete(data.room_id);
+          renderRooms();
+          log("sys", `← left ${data.room_id}`);
+          return;
+        case "message":
+          log("in", `← #${data.room_id} [${data.sender_id}] ${data.content}`);
+          return;
+        case "error":
+          log("err", `← error ${data.code}${data.room_id ? ` #${data.room_id}` : ""}${data.request_type ? ` (${data.request_type})` : ""}: ${data.message}`);
+          return;
+        default:
+          log("in", `← ${raw}`);
+      }
     }
 
     function send(payload, description) {
@@ -89,18 +138,28 @@
       log("out", `→ ${description}`);
     }
 
+    function sendJSON(value) {
+      const payload = JSON.stringify(value);
+      send(payload, payload);
+    }
+
     document.getElementById("connect").onclick = connect;
     document.getElementById("disconnect").onclick = () => socket && socket.close(1000, "bye");
-    document.getElementById("sendJson").onclick = () => {
-      const payload = JSON.stringify({ message: textInput.value });
-      send(payload, payload);
+    document.getElementById("join").onclick = () => sendJSON({ type: "join_room", room_id: roomInput.value.trim() });
+    document.getElementById("leave").onclick = () => sendJSON({ type: "leave_room", room_id: roomInput.value.trim() });
+    document.getElementById("sendMessage").onclick = () => {
+      if (!targetRoom.value) { log("err", "join a room first"); return; }
+      sendJSON({ type: "message", room_id: targetRoom.value, content: textInput.value });
     };
+    document.getElementById("sendNotJoined").onclick = () => sendJSON({ type: "message", room_id: "room-not-joined", content: textInput.value });
     document.getElementById("sendBinary").onclick = () => {
       const bytes = new TextEncoder().encode(textInput.value);
       send(bytes, `binary (${bytes.length} bytes)`);
     };
-    document.getElementById("sendMalformed").onclick = () => send('{"message":', '{"message":');
-    document.getElementById("sendTooBig").onclick = () => send("x".repeat(5000), "5000-byte text");
+    document.getElementById("sendMalformed").onclick = () => send('{"type":', '{"type":');
+    document.getElementById("sendTooBig").onclick = () => send("x".repeat(20000), "20000-byte text");
+
+    renderRooms();
   </script>
 </body>
 </html>
