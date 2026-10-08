@@ -17,12 +17,19 @@
   </style>
 </head>
 <body>
-  <h2>Phase 3 — Rooms</h2>
-  <p class="sys">Mở 3 tab, join các room khác nhau: message chỉ tới tab đã join room đó. Xem <a href="/debug/stats" target="_blank">/debug/stats</a>.</p>
+  <h2>Phase 4 — Authentication (JWT)</h2>
+  <p class="sys">Mỗi tab nhập userID khác nhau → Get token &amp; Connect. sender_id lấy từ token. Đặt TTL ngắn (vd 10s) để thấy close 4001. Xem <a href="/debug/stats" target="_blank">/debug/stats</a>.</p>
   <div class="row">
-    <button id="connect">Connect</button>
+    <input id="userID" value="user-123" placeholder="user id (sub)">
+    <input id="ttlSeconds" type="number" min="1" max="3600" value="900" title="token TTL (seconds)">
+    <span class="sys">TTL (s)</span>
+  </div>
+  <div class="row">
+    <button id="connect">Get token &amp; Connect</button>
+    <button id="connectNoToken">Connect without token</button>
     <button id="disconnect">Disconnect</button>
     <span>Status: <span id="status">closed</span></span>
+    <span id="tokenInfo" class="sys"></span>
   </div>
   <div class="row">
     <input id="roomInput" value="room-123" placeholder="room_id">
@@ -53,6 +60,10 @@
     const roomsBox = document.getElementById("rooms");
     const targetRoom = document.getElementById("targetRoom");
     const textInput = document.getElementById("text");
+    const userIDInput = document.getElementById("userID");
+    const ttlInput = document.getElementById("ttlSeconds");
+    const tokenInfo = document.getElementById("tokenInfo");
+    const closeReasons = { 4001: "token expired → lấy token mới rồi connect lại" };
     const joinedRooms = new Set();
     let socket = null;
 
@@ -88,10 +99,33 @@
       return false;
     }
 
-    function connect() {
+    async function fetchDevToken() {
+      const response = await fetch("/dev/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sub: userIDInput.value.trim(), ttl_seconds: Number(ttlInput.value) }),
+      });
+      if (!response.ok) throw new Error(`${response.status} ${(await response.text()).trim()}`);
+      return response.json();
+    }
+
+    async function connectWithToken() {
+      if (socket && socket.readyState <= WebSocket.OPEN) return;
+      try {
+        const { access_token: accessToken, expires_at: expiresAt } = await fetchDevToken();
+        tokenInfo.textContent = `as ${userIDInput.value.trim()}, token expires ${new Date(expiresAt).toLocaleTimeString()}`;
+        log("sys", `token issued for ${userIDInput.value.trim()}`);
+        connect(accessToken);
+      } catch (error) {
+        log("err", `get token failed: ${error.message} (server chạy với -dev chưa?)`);
+      }
+    }
+
+    function connect(accessToken) {
       if (socket && socket.readyState <= WebSocket.OPEN) return;
       const scheme = location.protocol === "https:" ? "wss" : "ws";
-      socket = new WebSocket(`${scheme}://${location.host}/ws`);
+      const query = accessToken ? `?access_token=${encodeURIComponent(accessToken)}` : "";
+      socket = new WebSocket(`${scheme}://${location.host}/ws${query}`);
       socket.binaryType = "arraybuffer";
       statusLabel.textContent = "connecting";
 
@@ -101,7 +135,10 @@
         statusLabel.textContent = "closed";
         joinedRooms.clear();
         renderRooms();
-        log("sys", `closed code=${event.code} reason="${event.reason}" clean=${event.wasClean}`);
+        tokenInfo.textContent = "";
+        const kind = event.code === 1000 ? "sys" : "err";
+        const hint = closeReasons[event.code] || (event.code === 1006 ? "handshake bị từ chối? (401 nếu token sai/thiếu)" : "");
+        log(kind, `closed code=${event.code} reason="${event.reason}" clean=${event.wasClean}${hint ? ` — ${hint}` : ""}`);
       };
       socket.onmessage = (event) => handleIncoming(event.data);
     }
@@ -143,7 +180,8 @@
       send(payload, payload);
     }
 
-    document.getElementById("connect").onclick = connect;
+    document.getElementById("connect").onclick = connectWithToken;
+    document.getElementById("connectNoToken").onclick = () => connect();
     document.getElementById("disconnect").onclick = () => socket && socket.close(1000, "bye");
     document.getElementById("join").onclick = () => sendJSON({ type: "join_room", room_id: roomInput.value.trim() });
     document.getElementById("leave").onclick = () => sendJSON({ type: "leave_room", room_id: roomInput.value.trim() });

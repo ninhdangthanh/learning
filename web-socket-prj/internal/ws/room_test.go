@@ -3,21 +3,28 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/ninhdang/ws-chat/internal/auth"
 )
 
 const (
 	replyTimeout     = 2 * time.Second
 	silenceWindow    = 200 * time.Millisecond
 	statsPollTimeout = 2 * time.Second
+	testTokenTTL     = 15 * time.Minute
 )
+
+var testJWTSecret = []byte("test-only-jwt-secret-with-32-bytes-or-more")
 
 type serverMessage struct {
 	Type        string `json:"type"`
@@ -29,8 +36,10 @@ type serverMessage struct {
 }
 
 type testServer struct {
-	hub   *Hub
-	wsURL string
+	hub      *Hub
+	wsURL    string
+	issuer   *auth.Issuer
+	nextUser *atomic.Int64
 }
 
 func startTestServer(t *testing.T) testServer {
@@ -40,22 +49,74 @@ func startTestServer(t *testing.T) testServer {
 	hub := NewHub(logger)
 	go hub.Run(ctx)
 
-	server := httptest.NewServer(NewHandler(DefaultConfig(), hub, logger))
+	verifier, err := auth.NewVerifier(testJWTSecret, auth.DefaultIssuer)
+	if err != nil {
+		t.Fatalf("new verifier: %v", err)
+	}
+	issuer, err := auth.NewIssuer(testJWTSecret, auth.DefaultIssuer)
+	if err != nil {
+		t.Fatalf("new issuer: %v", err)
+	}
+
+	server := httptest.NewServer(NewHandler(DefaultConfig(), hub, verifier, logger))
 	t.Cleanup(func() {
 		server.Close()
 		cancel()
 	})
-	return testServer{hub: hub, wsURL: "ws" + strings.TrimPrefix(server.URL, "http")}
+	return testServer{
+		hub:      hub,
+		wsURL:    "ws" + strings.TrimPrefix(server.URL, "http"),
+		issuer:   issuer,
+		nextUser: new(atomic.Int64),
+	}
 }
 
 func (s testServer) dial(t *testing.T) *websocket.Conn {
 	t.Helper()
-	conn, _, err := websocket.DefaultDialer.Dial(s.wsURL, nil)
+	return s.dialAs(t, fmt.Sprintf("user-%d", s.nextUser.Add(1)))
+}
+
+func (s testServer) dialAs(t *testing.T, userID string) *websocket.Conn {
+	t.Helper()
+	return s.dialWithToken(t, s.issueToken(t, userID, testTokenTTL))
+}
+
+func (s testServer) dialWithToken(t *testing.T, token string) *websocket.Conn {
+	t.Helper()
+	conn, resp, err := s.tryDial(t, s.wsURL, bearerHeader(token))
 	if err != nil {
-		t.Fatalf("dial: %v", err)
+		t.Fatalf("dial: %v (status %d)", err, statusOf(resp))
 	}
-	t.Cleanup(func() { _ = conn.Close() })
 	return conn
+}
+
+func (s testServer) tryDial(t *testing.T, url string, header http.Header) (*websocket.Conn, *http.Response, error) {
+	t.Helper()
+	conn, resp, err := websocket.DefaultDialer.Dial(url, header)
+	if conn != nil {
+		t.Cleanup(func() { _ = conn.Close() })
+	}
+	return conn, resp, err
+}
+
+func (s testServer) issueToken(t *testing.T, userID string, ttl time.Duration) string {
+	t.Helper()
+	token, err := s.issuer.Issue(userID, ttl)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+	return token
+}
+
+func bearerHeader(token string) http.Header {
+	return http.Header{"Authorization": []string{"Bearer " + token}}
+}
+
+func statusOf(resp *http.Response) int {
+	if resp == nil {
+		return 0
+	}
+	return resp.StatusCode
 }
 
 func (s testServer) waitForStats(t *testing.T, want Stats) {

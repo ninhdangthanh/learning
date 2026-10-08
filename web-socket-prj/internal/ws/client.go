@@ -3,14 +3,16 @@ package ws
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
+	"github.com/ninhdang/ws-chat/internal/auth"
 )
+
+const CloseTokenExpired = 4001
 
 type outboundFrame struct {
 	messageType int
@@ -19,6 +21,8 @@ type outboundFrame struct {
 
 type Client struct {
 	id          uint64
+	userID      string
+	expiresAt   time.Time
 	hub         *Hub
 	conn        *websocket.Conn
 	cfg         Config
@@ -33,23 +37,21 @@ type Client struct {
 	rooms       map[string]struct{}
 }
 
-func newClient(id uint64, hub *Hub, conn *websocket.Conn, cfg Config, logger *slog.Logger) *Client {
+func newClient(id uint64, hub *Hub, conn *websocket.Conn, identity auth.Identity, cfg Config, logger *slog.Logger) *Client {
 	return &Client{
 		id:         id,
+		userID:     identity.UserID,
+		expiresAt:  identity.ExpiresAt,
 		hub:        hub,
 		conn:       conn,
 		cfg:        cfg,
-		logger:     logger.With("conn_id", id, "remote_addr", conn.RemoteAddr().String()),
+		logger:     logger.With("conn_id", id, "user_id", identity.UserID, "remote_addr", conn.RemoteAddr().String()),
 		send:       make(chan outboundFrame, cfg.SendBufferSize),
 		done:       make(chan struct{}),
 		readerDone: make(chan struct{}),
 		writerDone: make(chan struct{}),
 		rooms:      make(map[string]struct{}),
 	}
-}
-
-func (c *Client) senderID() string {
-	return fmt.Sprintf("conn-%d", c.id)
 }
 
 func (c *Client) run() {
@@ -153,7 +155,7 @@ func (c *Client) handleText(payload []byte) {
 }
 
 func (c *Client) publish(roomID, content string) {
-	payload, ok := c.encode(newOutboundMessage(roomID, c.senderID(), content, time.Now().UTC()))
+	payload, ok := c.encode(newOutboundMessage(roomID, c.userID, content, time.Now().UTC()))
 	if !ok {
 		return
 	}
@@ -202,8 +204,10 @@ func (c *Client) logReadError(err error) {
 
 func (c *Client) writePump() {
 	ticker := time.NewTicker(c.cfg.PingPeriod)
+	tokenExpiry := time.NewTimer(time.Until(c.expiresAt))
 	defer func() {
 		ticker.Stop()
+		tokenExpiry.Stop()
 		_ = c.conn.Close()
 		close(c.writerDone)
 	}()
@@ -221,6 +225,8 @@ func (c *Client) writePump() {
 				return
 			}
 			c.logger.Debug("ping sent")
+		case <-tokenExpiry.C:
+			c.closeWith(CloseTokenExpired, "token expired")
 		case <-c.done:
 			c.sendCloseFrame(c.closeCode, c.closeReason)
 			c.awaitReader()
