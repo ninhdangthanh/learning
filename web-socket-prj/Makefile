@@ -1,13 +1,16 @@
-.PHONY: run debug build test tidy
+.PHONY: run debug run-once build test tidy
 
 WS_ALLOWED_ORIGINS ?= chrome-extension://gobngblklhkgmjhbpbdlkglbhhlafjnh
 ORIGINS ?= $(WS_ALLOWED_ORIGINS)
 
 run:
-	go run ./cmd/server -origins "*"
+	WS_ALLOWED_ORIGINS="*" go tool air
 
 debug:
-	go run ./cmd/server -debug -origins "*"
+	WS_ALLOWED_ORIGINS="*" go tool air -- -debug
+
+run-once:
+	go run ./cmd/server -origins "*"
 
 build:
 	go build -o bin/server ./cmd/server
