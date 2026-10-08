@@ -1,0 +1,14 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "Service": "sns.amazonaws.com" },
+      "Action": "sqs:SendMessage",
+      "Resource": "arn:aws:sqs:ap-southeast-1:859928916043:EmailQueue",
+      "Condition": {
+        "ArnEquals": { "aws:SourceArn": "arn:aws:sns:ap-southeast-1:859928916043:OrderEventsTopic" }
+      }
+    }
+  ]
+}
