@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -21,9 +22,11 @@ type outboundFrame struct {
 
 type Client struct {
 	id          uint64
+	ctx         context.Context
 	userID      string
 	expiresAt   time.Time
 	hub         *Hub
+	memberships MembershipChecker
 	conn        *websocket.Conn
 	cfg         Config
 	logger      *slog.Logger
@@ -37,20 +40,29 @@ type Client struct {
 	rooms       map[string]struct{}
 }
 
-func newClient(id uint64, hub *Hub, conn *websocket.Conn, identity auth.Identity, cfg Config, logger *slog.Logger) *Client {
+type clientDeps struct {
+	hub         *Hub
+	memberships MembershipChecker
+	cfg         Config
+	logger      *slog.Logger
+}
+
+func newClient(ctx context.Context, id uint64, conn *websocket.Conn, identity auth.Identity, deps clientDeps) *Client {
 	return &Client{
-		id:         id,
-		userID:     identity.UserID,
-		expiresAt:  identity.ExpiresAt,
-		hub:        hub,
-		conn:       conn,
-		cfg:        cfg,
-		logger:     logger.With("conn_id", id, "user_id", identity.UserID, "remote_addr", conn.RemoteAddr().String()),
-		send:       make(chan outboundFrame, cfg.SendBufferSize),
-		done:       make(chan struct{}),
-		readerDone: make(chan struct{}),
-		writerDone: make(chan struct{}),
-		rooms:      make(map[string]struct{}),
+		id:          id,
+		ctx:         ctx,
+		userID:      identity.UserID,
+		expiresAt:   identity.ExpiresAt,
+		hub:         deps.hub,
+		memberships: deps.memberships,
+		conn:        conn,
+		cfg:         deps.cfg,
+		logger:      deps.logger.With("conn_id", id, "user_id", identity.UserID, "remote_addr", conn.RemoteAddr().String()),
+		send:        make(chan outboundFrame, deps.cfg.SendBufferSize),
+		done:        make(chan struct{}),
+		readerDone:  make(chan struct{}),
+		writerDone:  make(chan struct{}),
+		rooms:       make(map[string]struct{}),
 	}
 }
 
@@ -146,12 +158,33 @@ func (c *Client) handleText(payload []byte) {
 	c.logger.Debug("text frame received", "type", envelope.Type, "room_id", envelope.RoomID)
 	switch envelope.Type {
 	case messageTypeJoinRoom:
-		c.hub.Join(c, envelope.RoomID)
+		c.join(envelope)
 	case messageTypeLeaveRoom:
 		c.hub.Leave(c, envelope.RoomID)
 	case messageTypeChat:
 		c.publish(envelope.RoomID, envelope.Content)
 	}
+}
+
+func (c *Client) join(request inboundEnvelope) {
+	allowed, err := c.isMember(request.RoomID)
+	if err != nil {
+		c.logger.Error("membership check failed, denying join", "room_id", request.RoomID, "error", err)
+		c.reply(newRequestError(ErrorCodeInternal, "cannot verify room membership", request))
+		return
+	}
+	if !allowed {
+		c.logger.Info("join forbidden", "room_id", request.RoomID)
+		c.reply(newRequestError(ErrorCodeForbidden, "You cannot join this room", request))
+		return
+	}
+	c.hub.Join(c, request.RoomID)
+}
+
+func (c *Client) isMember(roomID string) (bool, error) {
+	ctx, cancel := context.WithTimeout(c.ctx, c.cfg.MembershipWait)
+	defer cancel()
+	return c.memberships.IsMember(ctx, c.userID, roomID)
 }
 
 func (c *Client) publish(roomID, content string) {

@@ -15,11 +15,13 @@ const (
 	commandJoin
 	commandLeave
 	commandPublish
+	commandRevoke
 )
 
 type hubCommand struct {
 	kind    commandKind
 	client  *Client
+	userID  string
 	roomID  string
 	payload []byte
 }
@@ -83,6 +85,10 @@ func (h *Hub) Publish(client *Client, roomID string, payload []byte) {
 	h.submit(hubCommand{kind: commandPublish, client: client, roomID: roomID, payload: payload})
 }
 
+func (h *Hub) Revoke(userID, roomID string) {
+	h.submit(hubCommand{kind: commandRevoke, userID: userID, roomID: roomID})
+}
+
 func (h *Hub) Stats() Stats {
 	reply := make(chan Stats, 1)
 	select {
@@ -103,9 +109,13 @@ func (h *Hub) submit(cmd hubCommand) bool {
 }
 
 func (h *Hub) handle(cmd hubCommand) {
-	if cmd.kind == commandRegister {
+	switch cmd.kind {
+	case commandRegister:
 		h.clients[cmd.client] = struct{}{}
 		cmd.client.logger.Debug("client registered", "clients", len(h.clients))
+		return
+	case commandRevoke:
+		h.revoke(cmd.userID, cmd.roomID)
 		return
 	}
 	if _, registered := h.clients[cmd.client]; !registered {
@@ -152,6 +162,20 @@ func (h *Hub) publish(client *Client, roomID string, payload []byte) {
 	frame := outboundFrame{messageType: websocket.TextMessage, payload: payload}
 	for member := range h.rooms[roomID] {
 		h.deliver(member, frame)
+	}
+}
+
+func (h *Hub) revoke(userID, roomID string) {
+	var revoked []*Client
+	for member := range h.rooms[roomID] {
+		if member.userID == userID {
+			revoked = append(revoked, member)
+		}
+	}
+	for _, member := range revoked {
+		h.detach(member, roomID)
+		member.logger.Info("membership revoked, removed from room", "room_id", roomID)
+		h.reply(member, newAck(messageTypeRemoved, roomID))
 	}
 }
 

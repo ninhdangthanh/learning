@@ -17,10 +17,10 @@
   </style>
 </head>
 <body>
-  <h2>Phase 4 — Authentication (JWT)</h2>
-  <p class="sys">Mỗi tab nhập userID khác nhau → Get token &amp; Connect. sender_id lấy từ token. Đặt TTL ngắn (vd 10s) để thấy close 4001. Xem <a href="/debug/stats" target="_blank">/debug/stats</a>.</p>
+  <h2>Phase 5 — Authorization (room membership)</h2>
+  <p class="sys">Membership trong <code>data/memberships.json</code>: restaurant-001 = user-a, user-b · restaurant-002 = user-b · restaurant-003 = user-a, user-c. Join room không có quyền → FORBIDDEN. Revoke → client nhận <code>removed</code>. Xem <a href="/debug/stats" target="_blank">/debug/stats</a>.</p>
   <div class="row">
-    <input id="userID" value="user-123" placeholder="user id (sub)">
+    <input id="userID" value="user-a" placeholder="user id (sub)">
     <input id="ttlSeconds" type="number" min="1" max="3600" value="900" title="token TTL (seconds)">
     <span class="sys">TTL (s)</span>
   </div>
@@ -32,9 +32,13 @@
     <span id="tokenInfo" class="sys"></span>
   </div>
   <div class="row">
-    <input id="roomInput" value="room-123" placeholder="room_id">
+    <input id="roomInput" value="restaurant-001" placeholder="room_id">
     <button id="join">Join</button>
     <button id="leave">Leave</button>
+  </div>
+  <div class="row">
+    <input id="revokeUserID" value="user-a" placeholder="user_id to revoke">
+    <button id="revoke">Revoke membership in room above</button>
   </div>
   <div class="row">
     <span>Joined:</span>
@@ -158,6 +162,11 @@
           renderRooms();
           log("sys", `← left ${data.room_id}`);
           return;
+        case "removed":
+          joinedRooms.delete(data.room_id);
+          renderRooms();
+          log("err", `← removed from ${data.room_id} (membership revoked)`);
+          return;
         case "message":
           log("in", `← #${data.room_id} [${data.sender_id}] ${data.content}`);
           return;
@@ -185,6 +194,17 @@
     document.getElementById("disconnect").onclick = () => socket && socket.close(1000, "bye");
     document.getElementById("join").onclick = () => sendJSON({ type: "join_room", room_id: roomInput.value.trim() });
     document.getElementById("leave").onclick = () => sendJSON({ type: "leave_room", room_id: roomInput.value.trim() });
+    document.getElementById("revoke").onclick = async () => {
+      const roomID = roomInput.value.trim();
+      const userID = document.getElementById("revokeUserID").value.trim();
+      const response = await fetch(`/admin/rooms/${encodeURIComponent(roomID)}/revoke`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userID }),
+      });
+      const detail = response.ok ? "" : ` ${(await response.text()).trim()}`;
+      log(response.ok ? "sys" : "err", `revoke ${userID} from ${roomID} → ${response.status}${detail}`);
+    };
     document.getElementById("sendMessage").onclick = () => {
       if (!targetRoom.value) { log("err", "join a room first"); return; }
       sendJSON({ type: "message", room_id: targetRoom.value, content: textInput.value });

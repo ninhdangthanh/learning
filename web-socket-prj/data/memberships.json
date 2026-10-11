@@ -1,0 +1,5 @@
+{
+  "restaurant-001": ["user-a", "user-b"],
+  "restaurant-002": ["user-b"],
+  "restaurant-003": ["user-a", "user-c"]
+}

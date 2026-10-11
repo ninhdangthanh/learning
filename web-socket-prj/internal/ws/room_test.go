@@ -37,12 +37,28 @@ type serverMessage struct {
 
 type testServer struct {
 	hub      *Hub
+	httpURL  string
 	wsURL    string
 	issuer   *auth.Issuer
 	nextUser *atomic.Int64
 }
 
+type membershipFunc func(ctx context.Context, userID, roomID string) (bool, error)
+
+func (f membershipFunc) IsMember(ctx context.Context, userID, roomID string) (bool, error) {
+	return f(ctx, userID, roomID)
+}
+
+var allowAllMemberships = membershipFunc(func(context.Context, string, string) (bool, error) {
+	return true, nil
+})
+
 func startTestServer(t *testing.T) testServer {
+	t.Helper()
+	return startTestServerWith(t, allowAllMemberships, nil)
+}
+
+func startTestServerWith(t *testing.T, memberships MembershipChecker, revoker MembershipRevoker) testServer {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -58,14 +74,20 @@ func startTestServer(t *testing.T) testServer {
 		t.Fatalf("new issuer: %v", err)
 	}
 
-	server := httptest.NewServer(NewHandler(DefaultConfig(), hub, verifier, logger))
+	mux := http.NewServeMux()
+	mux.Handle("GET /ws", NewHandler(DefaultConfig(), hub, verifier, memberships, logger))
+	if revoker != nil {
+		mux.Handle("POST /admin/rooms/{"+RevokeRoomPathValue+"}/revoke", NewRevokeHandler(revoker, hub, logger))
+	}
+	server := httptest.NewServer(mux)
 	t.Cleanup(func() {
 		server.Close()
 		cancel()
 	})
 	return testServer{
 		hub:      hub,
-		wsURL:    "ws" + strings.TrimPrefix(server.URL, "http"),
+		httpURL:  server.URL,
+		wsURL:    "ws" + strings.TrimPrefix(server.URL, "http") + "/ws",
 		issuer:   issuer,
 		nextUser: new(atomic.Int64),
 	}

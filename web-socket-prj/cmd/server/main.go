@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ninhdang/ws-chat/internal/auth"
+	"github.com/ninhdang/ws-chat/internal/membership"
 	"github.com/ninhdang/ws-chat/internal/ws"
 )
 
@@ -21,7 +22,8 @@ func main() {
 	addr := flag.String("addr", ":8080", "HTTP listen address")
 	webDir := flag.String("web", "web", "directory of the static test client")
 	debug := flag.Bool("debug", false, "enable debug logs (ping/pong, frames)")
-	devMode := flag.Bool("dev", false, "enable POST /dev/token to mint test JWTs (never in production)")
+	devMode := flag.Bool("dev", false, "enable POST /dev/token and POST /admin/rooms/{room}/revoke (never in production)")
+	membershipsPath := flag.String("memberships", "data/memberships.json", "JSON file mapping room_id to member user ids")
 	origins := flag.String("origins", os.Getenv("WS_ALLOWED_ORIGINS"), "comma-separated extra origins allowed to open WebSocket (\"*\" allows all); defaults to $WS_ALLOWED_ORIGINS")
 	flag.Parse()
 
@@ -31,6 +33,12 @@ func main() {
 	verifier, err := auth.NewVerifier(jwtSecret, auth.DefaultIssuer)
 	if err != nil {
 		logger.Error("invalid JWT_SECRET", "error", err)
+		os.Exit(1)
+	}
+
+	memberships, err := membership.LoadFromFile(*membershipsPath)
+	if err != nil {
+		logger.Error("load memberships", "error", err)
 		os.Exit(1)
 	}
 
@@ -44,7 +52,7 @@ func main() {
 	wsConfig.AllowedOrigins = parseOrigins(*origins)
 
 	mux := http.NewServeMux()
-	mux.Handle("GET /ws", ws.NewHandler(wsConfig, hub, verifier, logger))
+	mux.Handle("GET /ws", ws.NewHandler(wsConfig, hub, verifier, memberships, logger))
 	mux.Handle("GET /debug/stats", statsHandler(hub, logger))
 	if *devMode {
 		issuer, err := auth.NewIssuer(jwtSecret, auth.DefaultIssuer)
@@ -53,7 +61,8 @@ func main() {
 			os.Exit(1)
 		}
 		mux.Handle("POST /dev/token", auth.NewDevTokenHandler(issuer, logger))
-		logger.Warn("dev mode enabled: POST /dev/token issues tokens for any user")
+		mux.Handle("POST /admin/rooms/{"+ws.RevokeRoomPathValue+"}/revoke", ws.NewRevokeHandler(memberships, hub, logger))
+		logger.Warn("dev mode enabled: POST /dev/token issues tokens for any user, POST /admin/rooms/{room}/revoke is unauthenticated")
 	}
 	mux.Handle("GET /", http.FileServer(http.Dir(*webDir)))
 

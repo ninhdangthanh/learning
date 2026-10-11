@@ -18,6 +18,7 @@ const (
 	ErrorCodeNotInRoom              = "NOT_IN_ROOM"
 	ErrorCodeTooManyRooms           = "TOO_MANY_ROOMS"
 	ErrorCodeContentTooLong         = "CONTENT_TOO_LONG"
+	ErrorCodeForbidden              = "FORBIDDEN"
 	ErrorCodeInternal               = "INTERNAL_ERROR"
 )
 
@@ -27,6 +28,7 @@ const (
 	messageTypeChat      = "message"
 	messageTypeJoined    = "joined"
 	messageTypeLeft      = "left"
+	messageTypeRemoved   = "removed"
 	messageTypeError     = "error"
 )
 

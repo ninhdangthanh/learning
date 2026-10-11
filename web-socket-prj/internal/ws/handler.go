@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -20,22 +21,28 @@ type TokenVerifier interface {
 	Verify(token string) (auth.Identity, error)
 }
 
-type Handler struct {
-	cfg      Config
-	hub      *Hub
-	verifier TokenVerifier
-	logger   *slog.Logger
-	upgrader websocket.Upgrader
-	nextID   atomic.Uint64
-	active   atomic.Int64
+type MembershipChecker interface {
+	IsMember(ctx context.Context, userID, roomID string) (bool, error)
 }
 
-func NewHandler(cfg Config, hub *Hub, verifier TokenVerifier, logger *slog.Logger) *Handler {
+type Handler struct {
+	cfg         Config
+	hub         *Hub
+	verifier    TokenVerifier
+	memberships MembershipChecker
+	logger      *slog.Logger
+	upgrader    websocket.Upgrader
+	nextID      atomic.Uint64
+	active      atomic.Int64
+}
+
+func NewHandler(cfg Config, hub *Hub, verifier TokenVerifier, memberships MembershipChecker, logger *slog.Logger) *Handler {
 	return &Handler{
-		cfg:      cfg,
-		hub:      hub,
-		verifier: verifier,
-		logger:   logger,
+		cfg:         cfg,
+		hub:         hub,
+		verifier:    verifier,
+		memberships: memberships,
+		logger:      logger,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -61,7 +68,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := newClient(h.nextID.Add(1), h.hub, conn, identity, h.cfg, h.logger)
+	deps := clientDeps{hub: h.hub, memberships: h.memberships, cfg: h.cfg, logger: h.logger}
+	client := newClient(r.Context(), h.nextID.Add(1), conn, identity, deps)
 	if !h.hub.Register(client) {
 		client.closeWith(websocket.CloseGoingAway, "server shutting down")
 	}
