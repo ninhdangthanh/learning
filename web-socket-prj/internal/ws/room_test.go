@@ -33,10 +33,13 @@ type serverMessage struct {
 	Content     string `json:"content"`
 	Code        string `json:"code"`
 	RequestType string `json:"request_type"`
+	UserID      string `json:"user_id"`
+	Status      string `json:"status"`
 }
 
 type testServer struct {
 	hub      *Hub
+	stopHub  func()
 	httpURL  string
 	wsURL    string
 	issuer   *auth.Issuer
@@ -86,6 +89,7 @@ func startTestServerWith(t *testing.T, memberships MembershipChecker, revoker Me
 	})
 	return testServer{
 		hub:      hub,
+		stopHub:  func() { cancel(); <-hub.stopped },
 		httpURL:  server.URL,
 		wsURL:    "ws" + strings.TrimPrefix(server.URL, "http") + "/ws",
 		issuer:   issuer,
@@ -141,12 +145,20 @@ func statusOf(resp *http.Response) int {
 	return resp.StatusCode
 }
 
+type statsCounts struct {
+	Clients, Users, Rooms int
+}
+
+func countsOf(stats Stats) statsCounts {
+	return statsCounts{Clients: stats.Clients, Users: stats.Users, Rooms: stats.Rooms}
+}
+
 func (s testServer) waitForStats(t *testing.T, want Stats) {
 	t.Helper()
 	deadline := time.Now().Add(statsPollTimeout)
 	for {
 		got := s.hub.Stats()
-		if got == want {
+		if countsOf(got) == countsOf(want) {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -163,7 +175,7 @@ func sendJSON(t *testing.T, conn *websocket.Conn, value any) {
 	}
 }
 
-func readMessage(t *testing.T, conn *websocket.Conn) serverMessage {
+func readFrame(t *testing.T, conn *websocket.Conn) serverMessage {
 	t.Helper()
 	if err := conn.SetReadDeadline(time.Now().Add(replyTimeout)); err != nil {
 		t.Fatalf("set read deadline: %v", err)
@@ -175,17 +187,42 @@ func readMessage(t *testing.T, conn *websocket.Conn) serverMessage {
 	return message
 }
 
+func readMessage(t *testing.T, conn *websocket.Conn) serverMessage {
+	t.Helper()
+	for {
+		if message := readFrame(t, conn); message.Type != messageTypePresence {
+			return message
+		}
+	}
+}
+
 func expectNoMessage(t *testing.T, conn *websocket.Conn, window time.Duration) {
+	t.Helper()
+	expectSilence(t, conn, window, true)
+}
+
+func expectNoFrame(t *testing.T, conn *websocket.Conn, window time.Duration) {
+	t.Helper()
+	expectSilence(t, conn, window, false)
+}
+
+func expectSilence(t *testing.T, conn *websocket.Conn, window time.Duration, ignorePresence bool) {
 	t.Helper()
 	if err := conn.SetReadDeadline(time.Now().Add(window)); err != nil {
 		t.Fatalf("set read deadline: %v", err)
 	}
-	_, payload, err := conn.ReadMessage()
-	if err == nil {
-		t.Fatalf("unexpected message: %s", payload)
-	}
-	if !isTimeout(err) {
-		t.Fatalf("expected read timeout, got %v", err)
+	for {
+		var message serverMessage
+		_, payload, err := conn.ReadMessage()
+		if err != nil {
+			if !isTimeout(err) {
+				t.Fatalf("expected read timeout, got %v", err)
+			}
+			return
+		}
+		if err := json.Unmarshal(payload, &message); err != nil || !ignorePresence || message.Type != messageTypePresence {
+			t.Fatalf("unexpected message: %s", payload)
+		}
 	}
 }
 
@@ -249,7 +286,7 @@ func TestJoinRoomIsIdempotent(t *testing.T) {
 
 	joinRoom(t, conn, "room-123")
 	joinRoom(t, conn, "room-123")
-	server.waitForStats(t, Stats{Clients: 1, Rooms: 1})
+	server.waitForStats(t, Stats{Clients: 1, Users: 1, Rooms: 1})
 }
 
 func TestMessageOnlyReachesRoomMembers(t *testing.T) {
@@ -324,13 +361,13 @@ func TestEmptyRoomIsCleanedUp(t *testing.T) {
 
 	joinRoom(t, leaver, "room-leave")
 	joinRoom(t, disconnector, "room-disconnect")
-	server.waitForStats(t, Stats{Clients: 2, Rooms: 2})
+	server.waitForStats(t, Stats{Clients: 2, Users: 2, Rooms: 2})
 
 	leaveRoom(t, leaver, "room-leave")
-	server.waitForStats(t, Stats{Clients: 2, Rooms: 1})
+	server.waitForStats(t, Stats{Clients: 2, Users: 2, Rooms: 1})
 
 	closeConnection(t, disconnector)
-	server.waitForStats(t, Stats{Clients: 1, Rooms: 0})
+	server.waitForStats(t, Stats{Clients: 1, Users: 1, Rooms: 0})
 }
 
 func TestDisconnectRemovesClientFromAllRooms(t *testing.T) {
@@ -340,10 +377,10 @@ func TestDisconnectRemovesClientFromAllRooms(t *testing.T) {
 	for _, roomID := range []string{"room-shared", "room-a", "room-b"} {
 		joinRoom(t, quitter, roomID)
 	}
-	server.waitForStats(t, Stats{Clients: 2, Rooms: 3})
+	server.waitForStats(t, Stats{Clients: 2, Users: 2, Rooms: 3})
 
 	closeConnection(t, quitter)
-	server.waitForStats(t, Stats{Clients: 1, Rooms: 1})
+	server.waitForStats(t, Stats{Clients: 1, Users: 1, Rooms: 1})
 
 	sendChat(t, stayer, "room-shared", "still here")
 	expectChat(t, stayer, "room-shared", "still here")

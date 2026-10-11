@@ -53,7 +53,7 @@ func TestMemberCanJoin(t *testing.T) {
 	alice := server.dialAs(t, "user-a")
 
 	joinRoom(t, alice, "restaurant-001")
-	server.waitForStats(t, Stats{Clients: 1, Rooms: 1})
+	server.waitForStats(t, Stats{Clients: 1, Users: 1, Rooms: 1})
 }
 
 func TestNonMemberGetsForbidden(t *testing.T) {
@@ -65,7 +65,7 @@ func TestNonMemberGetsForbidden(t *testing.T) {
 	if message.RoomID != "restaurant-002" || message.RequestType != messageTypeJoinRoom {
 		t.Fatalf("error should echo request, got %+v", message)
 	}
-	server.waitForStats(t, Stats{Clients: 1, Rooms: 0})
+	server.waitForStats(t, Stats{Clients: 1, Users: 1, Rooms: 0})
 
 	joinRoom(t, alice, "restaurant-001")
 }
@@ -110,7 +110,7 @@ func TestStoreErrorFailsClosed(t *testing.T) {
 
 	requestJoin(t, alice, "restaurant-001")
 	expectError(t, alice, ErrorCodeInternal)
-	server.waitForStats(t, Stats{Clients: 1, Rooms: 0})
+	server.waitForStats(t, Stats{Clients: 1, Users: 1, Rooms: 0})
 
 	sendChat(t, alice, "restaurant-001", "should not pass")
 	expectError(t, alice, ErrorCodeNotInRoom)

@@ -13,7 +13,10 @@ import (
 	"github.com/ninhdang/ws-chat/internal/auth"
 )
 
-const CloseTokenExpired = 4001
+const (
+	CloseTokenExpired       = 4001
+	CloseTooManyConnections = 4002
+)
 
 type outboundFrame struct {
 	messageType int

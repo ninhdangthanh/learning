@@ -17,7 +17,8 @@
   </style>
 </head>
 <body>
-  <h2>Phase 5 — Authorization (room membership)</h2>
+  <h2>Phase 6 — Multiple connections per user</h2>
+  <p class="sys">Mở nhiều tab cùng userID = nhiều device. Presence online/offline chỉ phát khi device đầu tiên vào / device cuối cùng rời room. Tab thứ 6 cùng user bị đóng 4002.</p>
   <p class="sys">Membership trong <code>data/memberships.json</code>: restaurant-001 = user-a, user-b · restaurant-002 = user-b · restaurant-003 = user-a, user-c. Join room không có quyền → FORBIDDEN. Revoke → client nhận <code>removed</code>. Xem <a href="/debug/stats" target="_blank">/debug/stats</a>.</p>
   <div class="row">
     <input id="userID" value="user-a" placeholder="user id (sub)">
@@ -67,7 +68,10 @@
     const userIDInput = document.getElementById("userID");
     const ttlInput = document.getElementById("ttlSeconds");
     const tokenInfo = document.getElementById("tokenInfo");
-    const closeReasons = { 4001: "token expired → lấy token mới rồi connect lại" };
+    const closeReasons = {
+      4001: "token expired → lấy token mới rồi connect lại",
+      4002: "user đã có đủ 5 connection → đóng bớt tab khác",
+    };
     const joinedRooms = new Set();
     let socket = null;
 
@@ -166,6 +170,9 @@
           joinedRooms.delete(data.room_id);
           renderRooms();
           log("err", `← removed from ${data.room_id} (membership revoked)`);
+          return;
+        case "presence":
+          log("sys", `← #${data.room_id} ${data.user_id} is ${data.status}`);
           return;
         case "message":
           log("in", `← #${data.room_id} [${data.sender_id}] ${data.content}`);

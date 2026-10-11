@@ -29,12 +29,19 @@ const (
 	messageTypeJoined    = "joined"
 	messageTypeLeft      = "left"
 	messageTypeRemoved   = "removed"
+	messageTypePresence  = "presence"
 	messageTypeError     = "error"
 )
 
 const (
-	MaxRoomsPerClient = 50
-	MaxContentLength  = 2000
+	presenceOnline  = "online"
+	presenceOffline = "offline"
+)
+
+const (
+	MaxRoomsPerClient     = 50
+	MaxContentLength      = 2000
+	MaxConnectionsPerUser = 5
 )
 
 var roomIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
@@ -58,6 +65,13 @@ type outboundAck struct {
 	RoomID string `json:"room_id"`
 }
 
+type outboundPresence struct {
+	Type   string `json:"type"`
+	RoomID string `json:"room_id"`
+	UserID string `json:"user_id"`
+	Status string `json:"status"`
+}
+
 type ErrorMessage struct {
 	Type        string `json:"type"`
 	Code        string `json:"code"`
@@ -72,6 +86,10 @@ func newOutboundMessage(roomID, senderID, content string, sentAt time.Time) outb
 
 func newAck(ackType, roomID string) outboundAck {
 	return outboundAck{Type: ackType, RoomID: roomID}
+}
+
+func newPresence(roomID, userID, status string) outboundPresence {
+	return outboundPresence{Type: messageTypePresence, RoomID: roomID, UserID: userID, Status: status}
 }
 
 func newErrorMessage(code, message string) ErrorMessage {

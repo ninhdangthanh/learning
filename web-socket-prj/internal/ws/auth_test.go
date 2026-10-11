@@ -105,7 +105,7 @@ func TestAcceptsHeaderToken(t *testing.T) {
 	if err != nil || statusOf(resp) != http.StatusSwitchingProtocols {
 		t.Fatalf("dial: err=%v status=%d, want 101", err, statusOf(resp))
 	}
-	server.waitForStats(t, Stats{Clients: 1})
+	server.waitForStats(t, Stats{Clients: 1, Users: 1})
 }
 
 func TestAcceptsQueryToken(t *testing.T) {
@@ -116,7 +116,7 @@ func TestAcceptsQueryToken(t *testing.T) {
 	if err != nil || statusOf(resp) != http.StatusSwitchingProtocols {
 		t.Fatalf("dial: err=%v status=%d, want 101", err, statusOf(resp))
 	}
-	server.waitForStats(t, Stats{Clients: 1})
+	server.waitForStats(t, Stats{Clients: 1, Users: 1})
 }
 
 func TestSenderIDComesFromToken(t *testing.T) {
