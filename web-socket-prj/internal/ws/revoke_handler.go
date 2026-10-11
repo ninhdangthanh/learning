@@ -20,6 +20,12 @@ type revokeRequest struct {
 	UserID string `json:"user_id"`
 }
 
+type revokeResponse struct {
+	UserID            string `json:"user_id"`
+	RoomID            string `json:"room_id"`
+	KickedConnections int    `json:"kicked_connections"`
+}
+
 func NewRevokeHandler(revoker MembershipRevoker, hub *Hub, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		roomID := r.PathValue(RevokeRoomPathValue)
@@ -38,8 +44,17 @@ func NewRevokeHandler(revoker MembershipRevoker, hub *Hub, logger *slog.Logger) 
 		}
 
 		revoker.Revoke(request.UserID, roomID)
-		hub.Revoke(request.UserID, roomID)
-		logger.Info("membership revoked", "user_id", request.UserID, "room_id", roomID)
-		w.WriteHeader(http.StatusNoContent)
+		kicked, ok := hub.Revoke(request.UserID, roomID)
+		if !ok {
+			http.Error(w, "server shutting down", http.StatusServiceUnavailable)
+			return
+		}
+		logger.Info("membership revoked", "user_id", request.UserID, "room_id", roomID, "kicked_connections", kicked)
+
+		w.Header().Set("Content-Type", "application/json")
+		response := revokeResponse{UserID: request.UserID, RoomID: roomID, KickedConnections: kicked}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			logger.Warn("write revoke response", "error", err)
+		}
 	}
 }

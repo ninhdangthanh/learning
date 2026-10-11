@@ -2,6 +2,7 @@ package ws
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -26,14 +27,20 @@ func startAuthorizedServer(t *testing.T) testServer {
 	return startTestServerWith(t, store, store)
 }
 
-func (s testServer) revoke(t *testing.T, roomID, body string) int {
+func (s testServer) revoke(t *testing.T, roomID, body string) (int, revokeResponse) {
 	t.Helper()
 	resp, err := http.Post(s.httpURL+"/admin/rooms/"+roomID+"/revoke", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("revoke request: %v", err)
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode
+	var decoded revokeResponse
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+			t.Fatalf("decode revoke response: %v", err)
+		}
+	}
+	return resp.StatusCode, decoded
 }
 
 func requestJoin(t *testing.T, conn *websocket.Conn, roomID string) {
@@ -138,8 +145,10 @@ func TestRevokeKicksFromRoom(t *testing.T) {
 	joinRoom(t, aliceLaptop, "restaurant-001")
 	joinRoom(t, bob, "restaurant-001")
 
-	if status := server.revoke(t, "restaurant-001", `{"user_id":"user-a"}`); status != http.StatusNoContent {
-		t.Fatalf("revoke status = %d, want 204", status)
+	status, response := server.revoke(t, "restaurant-001", `{"user_id":"user-a"}`)
+	want := revokeResponse{UserID: "user-a", RoomID: "restaurant-001", KickedConnections: 2}
+	if status != http.StatusOK || response != want {
+		t.Fatalf("revoke = %d %+v, want 200 %+v", status, response, want)
 	}
 
 	for _, conn := range []*websocket.Conn{alicePhone, aliceLaptop} {
@@ -161,6 +170,15 @@ func TestRevokeKicksFromRoom(t *testing.T) {
 	expectNoMessage(t, aliceLaptop, silenceWindow)
 }
 
+func TestRevokeWithoutActiveConnections(t *testing.T) {
+	server := startAuthorizedServer(t)
+
+	status, response := server.revoke(t, "restaurant-003", `{"user_id":"user-c"}`)
+	if status != http.StatusOK || response.KickedConnections != 0 {
+		t.Fatalf("revoke = %d %+v, want 200 with 0 kicked", status, response)
+	}
+}
+
 func TestRevokeRejectsBadRequests(t *testing.T) {
 	server := startAuthorizedServer(t)
 	cases := map[string]struct{ roomID, body string }{
@@ -170,7 +188,7 @@ func TestRevokeRejectsBadRequests(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if status := server.revoke(t, tc.roomID, tc.body); status != http.StatusBadRequest {
+			if status, _ := server.revoke(t, tc.roomID, tc.body); status != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400", status)
 			}
 		})

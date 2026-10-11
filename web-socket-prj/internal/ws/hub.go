@@ -24,6 +24,7 @@ type hubCommand struct {
 	userID  string
 	roomID  string
 	payload []byte
+	kicked  chan int
 }
 
 type Stats struct {
@@ -85,8 +86,12 @@ func (h *Hub) Publish(client *Client, roomID string, payload []byte) {
 	h.submit(hubCommand{kind: commandPublish, client: client, roomID: roomID, payload: payload})
 }
 
-func (h *Hub) Revoke(userID, roomID string) {
-	h.submit(hubCommand{kind: commandRevoke, userID: userID, roomID: roomID})
+func (h *Hub) Revoke(userID, roomID string) (int, bool) {
+	kicked := make(chan int, 1)
+	if !h.submit(hubCommand{kind: commandRevoke, userID: userID, roomID: roomID, kicked: kicked}) {
+		return 0, false
+	}
+	return <-kicked, true
 }
 
 func (h *Hub) Stats() Stats {
@@ -115,7 +120,7 @@ func (h *Hub) handle(cmd hubCommand) {
 		cmd.client.logger.Debug("client registered", "clients", len(h.clients))
 		return
 	case commandRevoke:
-		h.revoke(cmd.userID, cmd.roomID)
+		cmd.kicked <- h.revoke(cmd.userID, cmd.roomID)
 		return
 	}
 	if _, registered := h.clients[cmd.client]; !registered {
@@ -165,7 +170,7 @@ func (h *Hub) publish(client *Client, roomID string, payload []byte) {
 	}
 }
 
-func (h *Hub) revoke(userID, roomID string) {
+func (h *Hub) revoke(userID, roomID string) int {
 	var revoked []*Client
 	for member := range h.rooms[roomID] {
 		if member.userID == userID {
@@ -177,6 +182,7 @@ func (h *Hub) revoke(userID, roomID string) {
 		member.logger.Info("membership revoked, removed from room", "room_id", roomID)
 		h.reply(member, newAck(messageTypeRemoved, roomID))
 	}
+	return len(revoked)
 }
 
 func (h *Hub) attach(client *Client, roomID string) {

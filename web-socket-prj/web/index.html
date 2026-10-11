@@ -202,8 +202,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_id: userID }),
       });
-      const detail = response.ok ? "" : ` ${(await response.text()).trim()}`;
-      log(response.ok ? "sys" : "err", `revoke ${userID} from ${roomID} → ${response.status}${detail}`);
+      log(response.ok ? "sys" : "err", `revoke ${userID} from ${roomID} → ${response.status} ${(await response.text()).trim()}`);
     };
     document.getElementById("sendMessage").onclick = () => {
       if (!targetRoom.value) { log("err", "join a room first"); return; }
