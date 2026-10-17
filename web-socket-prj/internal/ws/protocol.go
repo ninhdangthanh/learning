@@ -30,6 +30,8 @@ const (
 	messageTypeLeft      = "left"
 	messageTypeRemoved   = "removed"
 	messageTypePresence  = "presence"
+	messageTypePing      = "ping"
+	messageTypePong      = "pong"
 	messageTypeError     = "error"
 )
 
@@ -65,6 +67,10 @@ type outboundAck struct {
 	RoomID string `json:"room_id"`
 }
 
+type outboundPong struct {
+	Type string `json:"type"`
+}
+
 type outboundPresence struct {
 	Type   string `json:"type"`
 	RoomID string `json:"room_id"`
@@ -86,6 +92,10 @@ func newOutboundMessage(roomID, senderID, content string, sentAt time.Time) outb
 
 func newAck(ackType, roomID string) outboundAck {
 	return outboundAck{Type: ackType, RoomID: roomID}
+}
+
+func newPong() outboundPong {
+	return outboundPong{Type: messageTypePong}
 }
 
 func newPresence(roomID, userID, status string) outboundPresence {
@@ -126,6 +136,8 @@ func decodeInbound(payload []byte) (inboundEnvelope, *ErrorMessage) {
 
 	envelope := inboundEnvelope{Type: *raw.Type, RoomID: valueOrEmpty(raw.RoomID), Content: valueOrEmpty(raw.Content)}
 	switch envelope.Type {
+	case messageTypePing:
+		return envelope, nil
 	case messageTypeJoinRoom, messageTypeLeaveRoom:
 		return envelope, validateRoomID(envelope, raw.RoomID != nil)
 	case messageTypeChat:

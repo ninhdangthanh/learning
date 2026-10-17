@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/ninhdang/ws-chat/internal/auth"
@@ -30,18 +31,19 @@ type Handler struct {
 	hub         *Hub
 	verifier    TokenVerifier
 	memberships MembershipChecker
+	metrics     *Metrics
 	logger      *slog.Logger
 	upgrader    websocket.Upgrader
 	nextID      atomic.Uint64
-	active      atomic.Int64
 }
 
-func NewHandler(cfg Config, hub *Hub, verifier TokenVerifier, memberships MembershipChecker, logger *slog.Logger) *Handler {
+func NewHandler(cfg Config, hub *Hub, verifier TokenVerifier, memberships MembershipChecker, metrics *Metrics, logger *slog.Logger) *Handler {
 	return &Handler{
 		cfg:         cfg,
 		hub:         hub,
 		verifier:    verifier,
 		memberships: memberships,
+		metrics:     metrics,
 		logger:      logger,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
@@ -49,10 +51,6 @@ func NewHandler(cfg Config, hub *Hub, verifier TokenVerifier, memberships Member
 			CheckOrigin:     newOriginChecker(cfg.AllowedOrigins),
 		},
 	}
-}
-
-func (h *Handler) ActiveConnections() int64 {
-	return h.active.Load()
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -68,18 +66,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deps := clientDeps{hub: h.hub, memberships: h.memberships, cfg: h.cfg, logger: h.logger}
+	deps := clientDeps{hub: h.hub, memberships: h.memberships, cfg: h.cfg, metrics: h.metrics, logger: h.logger}
 	client := newClient(r.Context(), h.nextID.Add(1), conn, identity, deps)
 	if !h.hub.Register(client) {
-		client.closeWith(websocket.CloseGoingAway, "server shutting down")
+		client.closeWith(websocket.CloseGoingAway, "server shutting down", reasonServerShutdown)
 	}
-	h.active.Add(1)
-	client.logger.Info("connection opened", "active", h.active.Load(), "token_expires_at", identity.ExpiresAt)
+	h.metrics.ActiveConnections.Add(1)
+	openedAt := time.Now()
+	client.logger.Info("connection opened", "active", h.metrics.ActiveConnections.Value(), "token_expires_at", identity.ExpiresAt)
 
 	client.run()
 
-	remaining := h.active.Add(-1)
-	client.logger.Info("connection closed", "active", remaining)
+	h.metrics.ActiveConnections.Add(-1)
+	h.metrics.recordDisconnect(client.disconnect)
+	client.logger.Info("connection closed", "reason", client.disconnect, "duration", time.Since(openedAt).Round(time.Millisecond), "active", h.metrics.ActiveConnections.Value())
 }
 
 func (h *Handler) rejectUnauthorized(w http.ResponseWriter, r *http.Request, err error) {

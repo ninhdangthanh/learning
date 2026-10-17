@@ -39,6 +39,7 @@ type serverMessage struct {
 
 type testServer struct {
 	hub      *Hub
+	metrics  *Metrics
 	stopHub  func()
 	httpURL  string
 	wsURL    string
@@ -56,13 +57,31 @@ var allowAllMemberships = membershipFunc(func(context.Context, string, string) (
 	return true, nil
 })
 
-func startTestServer(t *testing.T) testServer {
-	t.Helper()
-	return startTestServerWith(t, allowAllMemberships, nil)
+type testServerOptions struct {
+	memberships MembershipChecker
+	revoker     MembershipRevoker
+	configure   func(*Config)
 }
 
-func startTestServerWith(t *testing.T, memberships MembershipChecker, revoker MembershipRevoker) testServer {
+func startTestServer(t *testing.T) testServer {
 	t.Helper()
+	return startTestServerWith(t, testServerOptions{})
+}
+
+func startTestServerWith(t *testing.T, opts testServerOptions) testServer {
+	t.Helper()
+	cfg := DefaultConfig()
+	if opts.configure != nil {
+		opts.configure(&cfg)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("test config: %v", err)
+	}
+	memberships := opts.memberships
+	if memberships == nil {
+		memberships = allowAllMemberships
+	}
+	metrics := NewMetrics()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	hub := NewHub(logger)
@@ -78,17 +97,20 @@ func startTestServerWith(t *testing.T, memberships MembershipChecker, revoker Me
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("GET /ws", NewHandler(DefaultConfig(), hub, verifier, memberships, logger))
-	if revoker != nil {
-		mux.Handle("POST /admin/rooms/{"+RevokeRoomPathValue+"}/revoke", NewRevokeHandler(revoker, hub, logger))
+	mux.Handle("GET /ws", NewHandler(cfg, hub, verifier, memberships, metrics, logger))
+	if opts.revoker != nil {
+		mux.Handle("POST /admin/rooms/{"+RevokeRoomPathValue+"}/revoke", NewRevokeHandler(opts.revoker, hub, logger))
 	}
 	server := httptest.NewServer(mux)
 	t.Cleanup(func() {
 		server.Close()
 		cancel()
+		<-hub.stopped
+		http.DefaultClient.CloseIdleConnections()
 	})
 	return testServer{
 		hub:      hub,
+		metrics:  metrics,
 		stopHub:  func() { cancel(); <-hub.stopped },
 		httpURL:  server.URL,
 		wsURL:    "ws" + strings.TrimPrefix(server.URL, "http") + "/ws",

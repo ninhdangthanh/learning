@@ -24,7 +24,7 @@ func seededMemberships() *membership.InMemoryStore {
 func startAuthorizedServer(t *testing.T) testServer {
 	t.Helper()
 	store := seededMemberships()
-	return startTestServerWith(t, store, store)
+	return startTestServerWith(t, testServerOptions{memberships: store, revoker: store})
 }
 
 func (s testServer) revoke(t *testing.T, roomID, body string) (int, revokeResponse) {
@@ -105,7 +105,7 @@ func TestStoreErrorFailsClosed(t *testing.T) {
 	failing := membershipFunc(func(context.Context, string, string) (bool, error) {
 		return true, errors.New("store unavailable")
 	})
-	server := startTestServerWith(t, failing, nil)
+	server := startTestServerWith(t, testServerOptions{memberships: failing})
 	alice := server.dialAs(t, "user-a")
 
 	requestJoin(t, alice, "restaurant-001")
@@ -127,7 +127,7 @@ func TestMembershipCheckUsesDeadline(t *testing.T) {
 		deadlines <- time.Until(deadline)
 		return true, nil
 	})
-	server := startTestServerWith(t, recording, nil)
+	server := startTestServerWith(t, testServerOptions{memberships: recording})
 	alice := server.dialAs(t, "user-a")
 
 	joinRoom(t, alice, "restaurant-001")
@@ -210,7 +210,7 @@ func TestSlowStoreDoesNotBlockOtherClients(t *testing.T) {
 			return false, ctx.Err()
 		}
 	})
-	server := startTestServerWith(t, slowForAlice, nil)
+	server := startTestServerWith(t, testServerOptions{memberships: slowForAlice})
 	alice, bob := server.dialAs(t, "user-a"), server.dialAs(t, "user-b")
 
 	requestJoin(t, alice, "restaurant-001")

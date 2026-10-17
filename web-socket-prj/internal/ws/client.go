@@ -32,6 +32,7 @@ type Client struct {
 	memberships MembershipChecker
 	conn        *websocket.Conn
 	cfg         Config
+	metrics     *Metrics
 	logger      *slog.Logger
 	send        chan outboundFrame
 	done        chan struct{}
@@ -40,6 +41,7 @@ type Client struct {
 	stopOnce    sync.Once
 	closeCode   int
 	closeReason string
+	disconnect  disconnectReason
 	rooms       map[string]struct{}
 }
 
@@ -47,6 +49,7 @@ type clientDeps struct {
 	hub         *Hub
 	memberships MembershipChecker
 	cfg         Config
+	metrics     *Metrics
 	logger      *slog.Logger
 }
 
@@ -60,6 +63,7 @@ func newClient(ctx context.Context, id uint64, conn *websocket.Conn, identity au
 		memberships: deps.memberships,
 		conn:        conn,
 		cfg:         deps.cfg,
+		metrics:     deps.metrics,
 		logger:      deps.logger.With("conn_id", id, "user_id", identity.UserID, "remote_addr", conn.RemoteAddr().String()),
 		send:        make(chan outboundFrame, deps.cfg.SendBufferSize),
 		done:        make(chan struct{}),
@@ -75,10 +79,11 @@ func (c *Client) run() {
 	<-c.writerDone
 }
 
-func (c *Client) stop(code int, reason string) {
+func (c *Client) stop(code int, closeText string, reason disconnectReason) {
 	c.stopOnce.Do(func() {
 		c.closeCode = code
-		c.closeReason = reason
+		c.closeReason = closeText
+		c.disconnect = reason
 		close(c.done)
 	})
 }
@@ -107,7 +112,6 @@ func (c *Client) trySend(frame outboundFrame) bool {
 func (c *Client) readPump() {
 	defer func() {
 		c.hub.Unregister(c)
-		c.stop(websocket.CloseNormalClosure, "")
 		close(c.readerDone)
 	}()
 
@@ -121,12 +125,14 @@ func (c *Client) readPump() {
 	for {
 		messageType, payload, err := c.conn.ReadMessage()
 		if err != nil {
-			c.logReadError(err)
+			c.stop(websocket.CloseNormalClosure, "", c.classifyReadError(err))
 			return
 		}
+		c.extendReadDeadline()
 		if c.isStopped() {
 			continue
 		}
+		c.metrics.MessagesIn.Add(1)
 		c.handleFrame(messageType, payload)
 	}
 }
@@ -147,7 +153,7 @@ func (c *Client) handleFrame(messageType int, payload []byte) {
 
 func (c *Client) handleText(payload []byte) {
 	if !utf8.Valid(payload) {
-		c.closeWith(websocket.CloseInvalidFramePayloadData, "text frame is not valid UTF-8")
+		c.closeWith(websocket.CloseInvalidFramePayloadData, "text frame is not valid UTF-8", reasonProtocolError)
 		return
 	}
 
@@ -160,6 +166,8 @@ func (c *Client) handleText(payload []byte) {
 
 	c.logger.Debug("text frame received", "type", envelope.Type, "room_id", envelope.RoomID)
 	switch envelope.Type {
+	case messageTypePing:
+		c.reply(newPong())
 	case messageTypeJoinRoom:
 		c.join(envelope)
 	case messageTypeLeaveRoom:
@@ -204,7 +212,7 @@ func (c *Client) reply(value any) {
 		return
 	}
 	if !c.trySend(outboundFrame{messageType: websocket.TextMessage, payload: payload}) {
-		c.closeWith(websocket.ClosePolicyViolation, "send buffer full")
+		c.closeWith(websocket.ClosePolicyViolation, "send buffer full", reasonSlowClient)
 	}
 }
 
@@ -212,29 +220,34 @@ func (c *Client) encode(value any) ([]byte, bool) {
 	payload, err := json.Marshal(value)
 	if err != nil {
 		c.logger.Error("encode outbound message", "error", err)
-		c.closeWith(websocket.CloseInternalServerErr, ErrorCodeInternal)
+		c.closeWith(websocket.CloseInternalServerErr, ErrorCodeInternal, reasonInternalError)
 		return nil, false
 	}
 	return payload, true
 }
 
-func (c *Client) closeWith(code int, reason string) {
-	c.logger.Info("closing connection", "code", code, "reason", reason)
-	c.stop(code, reason)
+func (c *Client) closeWith(code int, closeText string, reason disconnectReason) {
+	c.logger.Info("closing connection", "code", code, "close_text", closeText, "reason", reason)
+	c.stop(code, closeText, reason)
 }
 
-func (c *Client) logReadError(err error) {
+func (c *Client) classifyReadError(err error) disconnectReason {
 	switch {
 	case websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway):
 		c.logger.Info("client closed connection", "error", err)
+		return reasonClientClosed
 	case c.isStopped():
 		c.logger.Info("close handshake finished", "error", err)
+		return c.disconnect
 	case errors.Is(err, websocket.ErrReadLimit):
 		c.logger.Warn("message exceeds read limit", "limit", c.cfg.MaxMessageSize)
+		return reasonProtocolError
 	case isTimeout(err):
 		c.logger.Warn("read deadline exceeded, peer considered dead", "error", err)
+		return reasonPongTimeout
 	default:
 		c.logger.Warn("unexpected disconnect", "error", err)
+		return reasonConnectionLost
 	}
 }
 
@@ -255,6 +268,7 @@ func (c *Client) writePump() {
 				c.abortOnWriteError(err)
 				return
 			}
+			c.metrics.MessagesOut.Add(1)
 		case <-ticker.C:
 			if err := c.write(websocket.PingMessage, nil); err != nil {
 				c.abortOnWriteError(err)
@@ -262,7 +276,7 @@ func (c *Client) writePump() {
 			}
 			c.logger.Debug("ping sent")
 		case <-tokenExpiry.C:
-			c.closeWith(CloseTokenExpired, "token expired")
+			c.closeWith(CloseTokenExpired, "token expired", reasonTokenExpired)
 		case <-c.done:
 			c.sendCloseFrame(c.closeCode, c.closeReason)
 			c.awaitReader()
@@ -298,7 +312,7 @@ func (c *Client) abortOnWriteError(err error) {
 	if !errors.Is(err, websocket.ErrCloseSent) {
 		c.logger.Warn("write failed", "error", err)
 	}
-	c.stop(websocket.CloseAbnormalClosure, "write failed")
+	c.stop(websocket.CloseAbnormalClosure, "write failed", reasonWriteFailed)
 }
 
 func isTimeout(err error) bool {

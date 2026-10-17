@@ -162,7 +162,7 @@ func (h *Hub) register(client *Client) {
 	conns := h.users[client.userID]
 	if len(conns) >= MaxConnectionsPerUser {
 		client.logger.Warn("connection limit reached, rejecting new connection", "limit", MaxConnectionsPerUser)
-		client.stop(CloseTooManyConnections, "too many connections")
+		client.stop(CloseTooManyConnections, "too many connections", reasonTooManyConnections)
 		return
 	}
 	if conns == nil {
@@ -321,5 +321,5 @@ func (h *Hub) deliver(client *Client, frame outboundFrame) {
 		return
 	}
 	client.logger.Warn("slow client kicked", "send_buffer", cap(client.send))
-	client.stop(websocket.ClosePolicyViolation, "send buffer full")
+	client.stop(websocket.ClosePolicyViolation, "send buffer full", reasonSlowClient)
 }
