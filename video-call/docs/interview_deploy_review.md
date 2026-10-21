@@ -125,6 +125,18 @@ Thứ tự ưu tiên nếu được hỏi "có 1 ngày thì sửa gì trước":
 
 > Mỗi lần CI render image mới là register một revision mới (`videocall-task:8`, `:9`…). ECS service được update sang revision mới, chạy task mới, chờ healthy rồi dừng task cũ. Rollback là trỏ service về revision cũ.
 
+**Project có mấy IAM role? Có phải 1 role cho CloudWatch lấy log, 1 role cho ECS pull image?**
+
+> Không. Chỉ có **1 role** là `ecsTaskExecutionRole`. CloudWatch không tự "lấy" log; ECS agent đẩy log lên bằng chính execution role. Pull image, ghi log và đọc secret đều do ECS agent làm trước/khi container chạy, nên gom chung một role.
+
+| Quyền | Đến từ | Dùng để |
+|---|---|---|
+| Pull image từ ECR | Managed policy `AmazonECSTaskExecutionRolePolicy` | Lấy image lúc start task |
+| Ghi log CloudWatch | Cùng managed policy | `awslogs` driver đẩy log vào `/ecs/videocall` |
+| `ssm:GetParameters` trên `parameter/videocall/*` | Inline policy tự thêm | Inject `JWT_SECRET`, TURN credential vào container |
+
+> Managed policy **không** có `logs:CreateLogGroup` nên log group `/ecs/videocall` phải tạo tay trước. Ngoài role ra còn **IAM user** `github-actions-videocall-deploy` cho CI/CD — đó là user dùng access key, không phải role.
+
 **Execution role khác task role? Project này có task role không?**
 
 > Execution role cho ECS agent pull image từ ECR, ghi log, đọc SSM. Task role cho code gọi AWS lúc runtime. Backend hiện không gọi AWS API nên chưa cần task role; nếu thêm upload avatar lên S3 thì sẽ tạo task role có `s3:PutObject` trên đúng bucket/prefix.
