@@ -197,7 +197,7 @@ export function useWebRTC(
     const pc = createPeerConnection(incomingCall.from)
 
     if (pendingOfferRef.current) {
-      await pc.setRemoteDescription(new RTCSessionDescription(pendingOfferRef.current.payload))
+      await pc.setRemoteDescription(new RTCSessionDescription(pendingOfferRef.current.payload as RTCSessionDescriptionInit))
       const answer = await pc.createAnswer()
       await pc.setLocalDescription(answer)
 
@@ -296,7 +296,7 @@ export function useWebRTC(
         case 'offer': {
           const pc = peerConnectionRef.current
           if (pc) {
-            await pc.setRemoteDescription(new RTCSessionDescription(message.payload))
+            await pc.setRemoteDescription(new RTCSessionDescription(message.payload as RTCSessionDescriptionInit))
             const answer = await pc.createAnswer()
             await pc.setLocalDescription(answer)
 
@@ -316,7 +316,7 @@ export function useWebRTC(
         case 'answer': {
           const pc = peerConnectionRef.current
           if (pc) {
-            await pc.setRemoteDescription(new RTCSessionDescription(message.payload))
+            await pc.setRemoteDescription(new RTCSessionDescription(message.payload as RTCSessionDescriptionInit))
           }
           break
         }
@@ -324,9 +324,9 @@ export function useWebRTC(
         case 'ice-candidate': {
           const pc = peerConnectionRef.current
           if (pc && pc.remoteDescription) {
-            await pc.addIceCandidate(new RTCIceCandidate(message.payload))
+            await pc.addIceCandidate(new RTCIceCandidate(message.payload as RTCIceCandidateInit))
           } else {
-            pendingCandidatesRef.current.push(message.payload)
+            pendingCandidatesRef.current.push(message.payload as RTCIceCandidateInit)
           }
           break
         }

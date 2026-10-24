@@ -1,6 +1,7 @@
 import { useState, FormEvent } from 'react'
 import { Link } from 'react-router-dom'
-import { useAuth } from '../context/AuthContext'
+import { useAuth } from '../context/useAuth'
+import { getErrorMessage } from '../utils/errors'
 
 function Login() {
   const { login } = useAuth()
@@ -16,8 +17,8 @@ function Login() {
 
     try {
       await login(username, password)
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err) {
+      setError(getErrorMessage(err))
     } finally {
       setLoading(false)
     }
