@@ -3,6 +3,8 @@ package auth
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -15,6 +17,8 @@ import (
 )
 
 var jwtSecret = []byte(getJWTSecretValue())
+
+var ErrInvalidToken = errors.New("invalid token")
 
 func getJWTSecretValue() string {
 	if secret := os.Getenv("JWT_SECRET"); secret != "" {
@@ -67,7 +71,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Insert user
-	result, err := h.db.Exec(
+	result, err := h.db.ExecContext(r.Context(),
 		"INSERT INTO users (username, email, password_hash, display_name) VALUES (?, ?, ?, ?)",
 		req.Username, req.Email, string(hashedPassword), req.DisplayName,
 	)
@@ -123,12 +127,12 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	// Find user
 	var user models.User
-	err := h.db.QueryRow(
+	err := h.db.QueryRowContext(r.Context(),
 		"SELECT id, username, email, password_hash, display_name, avatar_url, created_at, updated_at FROM users WHERE username = ?",
 		req.Username,
 	).Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.DisplayName, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Invalid username or password"})
 		return
 	}
@@ -183,7 +187,7 @@ func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := h.db.Query("SELECT id, username, display_name, avatar_url FROM users")
+	rows, err := h.db.QueryContext(r.Context(), "SELECT id, username, display_name, avatar_url FROM users")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to fetch users"})
 		return
@@ -209,24 +213,16 @@ func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) getUserFromToken(r *http.Request) (*models.User, error) {
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
-		return nil, jwt.ErrSignatureInvalid
+		return nil, ErrInvalidToken
 	}
 
-	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
-
-	claims := &jwt.MapClaims{}
-	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-		return jwtSecret, nil
-	})
-
-	if err != nil || !token.Valid {
-		return nil, jwt.ErrSignatureInvalid
+	userID, _, err := ParseToken(strings.TrimPrefix(authHeader, "Bearer "))
+	if err != nil {
+		return nil, err
 	}
-
-	userID := int64((*claims)["user_id"].(float64))
 
 	var user models.User
-	err = h.db.QueryRow(
+	err = h.db.QueryRowContext(r.Context(),
 		"SELECT id, username, email, password_hash, display_name, avatar_url, created_at, updated_at FROM users WHERE id = ?",
 		userID,
 	).Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.DisplayName, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
@@ -236,6 +232,24 @@ func (h *Handler) getUserFromToken(r *http.Request) (*models.User, error) {
 	}
 
 	return &user, nil
+}
+
+func ParseToken(tokenString string) (int64, string, error) {
+	claims := jwt.MapClaims{}
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+		return jwtSecret, nil
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
+	if err != nil || !token.Valid {
+		return 0, "", ErrInvalidToken
+	}
+
+	rawUserID, ok := claims["user_id"].(float64)
+	if !ok {
+		return 0, "", ErrInvalidToken
+	}
+	username, _ := claims["username"].(string)
+
+	return int64(rawUserID), username, nil
 }
 
 func generateToken(user models.User) (string, error) {
@@ -252,10 +266,7 @@ func generateToken(user models.User) (string, error) {
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
-}
-
-// GetJWTSecret exposes the JWT secret for use in the signaling package
-func GetJWTSecret() []byte {
-	return jwtSecret
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		log.Printf("Failed to encode response: %v", err)
+	}
 }

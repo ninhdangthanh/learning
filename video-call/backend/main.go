@@ -1,24 +1,35 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"video-call-backend/internal/auth"
 	"video-call-backend/internal/database"
 	"video-call-backend/internal/signaling"
 )
 
+const readHeaderTimeout = 10 * time.Second
+
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	// Initialize database
 	dbPath := os.Getenv("DB_PATH")
 	if dbPath == "" {
 		dbPath = "./videocall.db"
 	}
-	db, err := database.InitDB(dbPath)
+	db, err := database.InitDB(context.Background(), dbPath)
 	if err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
+		return fmt.Errorf("failed to initialize database: %w", err)
 	}
 	defer db.Close()
 
@@ -49,10 +60,17 @@ func main() {
 		port = "8080"
 	}
 
-	log.Printf("🚀 Video Call Backend running on http://localhost:%s", port)
-	if err := http.ListenAndServe(":"+port, handler); err != nil {
-		log.Fatalf("Server failed: %v", err)
+	server := &http.Server{
+		Addr:              ":" + port,
+		Handler:           handler,
+		ReadHeaderTimeout: readHeaderTimeout,
 	}
+
+	log.Printf("🚀 Video Call Backend running on http://localhost:%s", port)
+	if err := server.ListenAndServe(); err != nil {
+		return fmt.Errorf("server failed: %w", err)
+	}
+	return nil
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

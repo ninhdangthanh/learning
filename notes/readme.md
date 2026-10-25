@@ -106,6 +106,8 @@ Concept nên nắm thêm trong nhóm này:
 | File | Dùng để ôn |
 |---|---|
 | [Kubernetes Middle Notes](kubernetes-middle-notes.md) | K8s cho backend chạy trên EKS: Cluster/Control Plane/Node, Pod, Deployment/replica, Ingress + ALB, Helm `values.yaml`, câu trả lời "có kinh nghiệm K8s không" |
+| [AWS Middle Notes](aws-middle-notes.md) | AWS cho backend đi phỏng vấn: IAM/VPC/SG, chọn EC2 vs ECS vs Lambda, ALB vs NLB vs API Gateway, S3, RDS vs DynamoDB, SQS/SNS/EventBridge, secret, CloudWatch, CI/CD, map từ CV sang câu hỏi |
+| [Video Call Deploy Review](../video-call/docs/interview_deploy_review.md) | Hạ tầng ECS Fargate + ALB + Route 53 + ACM đang chạy, cách pitch, 14 điểm yếu demo-grade và cách production sẽ làm |
 
 Concept nên nắm thêm trong nhóm này:
 

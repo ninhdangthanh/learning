@@ -1,26 +1,27 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
-func InitDB(dbPath string) (*sql.DB, error) {
+func InitDB(ctx context.Context, dbPath string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
 	// Enable WAL mode for better concurrent access
-	_, err = db.Exec("PRAGMA journal_mode=WAL")
+	_, err = db.ExecContext(ctx, "PRAGMA journal_mode=WAL")
 	if err != nil {
 		return nil, fmt.Errorf("failed to set WAL mode: %w", err)
 	}
 
 	// Create tables
-	err = createTables(db)
+	err = createTables(ctx, db)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tables: %w", err)
 	}
@@ -28,7 +29,7 @@ func InitDB(dbPath string) (*sql.DB, error) {
 	return db, nil
 }
 
-func createTables(db *sql.DB) error {
+func createTables(ctx context.Context, db *sql.DB) error {
 	query := `
 	CREATE TABLE IF NOT EXISTS users (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,6 +46,6 @@ func createTables(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 	`
 
-	_, err := db.Exec(query)
+	_, err := db.ExecContext(ctx, query)
 	return err
 }

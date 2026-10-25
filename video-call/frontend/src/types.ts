@@ -24,7 +24,7 @@ export interface SignalMessage {
   type: string
   from: number
   to: number
-  payload: any
+  payload: unknown
   fromName: string
 }
 

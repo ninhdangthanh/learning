@@ -32,7 +32,7 @@ export function useWebSocket(token: string | null): UseWebSocketReturn {
         const msg: SignalMessage = JSON.parse(event.data)
 
         if (msg.type === 'users-list') {
-          setOnlineUsers(msg.payload)
+          setOnlineUsers(msg.payload as OnlineUser[])
         } else {
           setSignalMessages((messages) => [...messages, msg])
         }

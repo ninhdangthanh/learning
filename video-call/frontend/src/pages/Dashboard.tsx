@@ -1,4 +1,4 @@
-import { useAuth } from '../context/AuthContext'
+import { useAuth } from '../context/useAuth'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { useWebRTC } from '../hooks/useWebRTC'
 import VideoCall from '../components/VideoCall'

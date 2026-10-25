@@ -45,6 +45,8 @@ make up
 - [WebRTC architecture notes](docs/WEBRTC_ARCHITECTURE_NOTES.md)
 - TODO: [TURN coturn AWS setup](docs/TURN_COTURN_AWS_SETUP.md)
 - [AWS ECS architecture questions](docs/aws_ecs_architecture_questions.md)
+- [Deploy review for interviews](docs/interview_deploy_review.md)
+- [Deploy steps for interviews](docs/interview_deploy_steps.md)
 - [Original implementation plan](docs/plan.md)
 
 ## Testing on Local WiFi

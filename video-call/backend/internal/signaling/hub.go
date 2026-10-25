@@ -5,12 +5,10 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 
 	"video-call-backend/internal/auth"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 )
 
@@ -127,23 +125,15 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate JWT token
-	claims := &jwt.MapClaims{}
-	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-		return auth.GetJWTSecret(), nil
-	})
-
-	if err != nil || !token.Valid {
+	userID, username, err := auth.ParseToken(tokenString)
+	if err != nil {
 		http.Error(w, "Invalid token", http.StatusUnauthorized)
 		return
 	}
 
-	userID := int64((*claims)["user_id"].(float64))
-	username := (*claims)["username"].(string)
-
 	// Get display name from database
 	var displayName string
-	err = h.db.QueryRow("SELECT display_name FROM users WHERE id = ?", userID).Scan(&displayName)
+	err = h.db.QueryRowContext(r.Context(), "SELECT display_name FROM users WHERE id = ?", userID).Scan(&displayName)
 	if err != nil {
 		displayName = username
 	}
@@ -240,6 +230,3 @@ func (h *Hub) IsUserOnline(userID int64) bool {
 	_, ok := h.clients[userID]
 	return ok
 }
-
-// Helper to suppress unused import warnings
-var _ = strings.TrimPrefix
