@@ -169,7 +169,7 @@ User → Route 53 (DNS) → CloudFront (CDN, optional) → WAF → ALB / API Gat
 
 * **ALB idle timeout mặc định 60s**: WebSocket/SSE không có traffic sẽ bị ALB cắt → server phải gửi ping/heartbeat định kỳ hoặc tăng idle timeout.
 * **Sticky session**: ALB có cookie stickiness, nhưng đừng dựa vào nó để giữ state; ưu tiên app stateless + Redis.
-* **Health check**: target group gọi `/health`; fail N lần → target bị loại; ECS service sẽ thay task.
+* **Health check**: target group gọi `/health`; fail N lần → target bị loại; ECS service sẽ thay task. Chi tiết và chỗ config: §15 câu 13–14.
 * **Connection draining / deregistration delay**: khi deploy, ALB ngừng gửi request mới cho task cũ và chờ request đang chạy xong.
 * API Gateway có **giới hạn timeout tích hợp** (mặc định ~29s) → job dài phải làm async (trả 202, xử lý qua SQS/Lambda).
 
@@ -391,6 +391,61 @@ git push → GitHub Actions → build image → push ECR (tag = git SHA)
 **12. Sao không public trực tiếp port 8080 của backend?**
 
 > Giảm attack surface: chỉ ALB public 443, TLS terminate ở ALB, backend chỉ nhận từ SG của ALB/frontend. Thêm WAF, rate limit ở một chỗ.
+
+**13. Task hỏng nhưng vẫn running: ALB health check và ECS health check có tách riêng không?**
+
+> Có hai cơ chế check riêng, nhưng khi service gắn ALB thì ECS cũng dùng kết quả của ALB để thay task. ALB health check gọi HTTP vào target, fail N lần thì ALB ngừng route request mới vào target đó. ECS service scheduler thấy target unhealthy thì deregister target (draining theo `deregistration_delay`), gửi SIGTERM rồi SIGKILL sau `stopTimeout`, và chạy task mới (stopped reason: `Task failed ELB health checks`). Container health check do ECS agent chạy lệnh bên trong container; nếu essential container bị đánh dấu UNHEALTHY thì ECS cũng thay task. Tự ALB không xoá target; việc deregister và replace là do ECS làm.
+
+| | ALB health check | Container health check |
+|---|---|---|
+| Ai chạy | ALB gọi HTTP vào IP:port của target | ECS agent chạy lệnh trong container |
+| Ai dùng kết quả | ALB (routing) + ECS (thay task) | ECS (thay task) |
+| Khi fail | Ngừng route request mới, ECS deregister và thay task | ECS thay task |
+
+Điểm dễ nhầm:
+
+* `healthCheckGracePeriodSeconds`: ECS bỏ qua kết quả health check fail trong khoảng này sau khi task start. Grace quá ngắn thì app start chậm sẽ bị kill liên tục.
+* Fail-open: nếu tất cả target đều unhealthy thì ALB vẫn route tới tất cả.
+* `/health` chỉ check process còn sống mà vẫn trả 200 khi app hỏng (DB chết, deadlock) thì không cơ chế nào thay task.
+* Essential container exit thì task stop ngay, không cần health check.
+* Chỉ ECS service mới tự thay task; task chạy bằng `RunTask` chết là mất luôn.
+* Deployment circuit breaker cũng tính các lần fail health check để rollback.
+
+**14. Hai loại health check đó config ở đâu?**
+
+> ALB health check cấu hình trên Target Group. Container health check cấu hình trong Task Definition. Phần nối hai cái lại (gắn TG và đặt grace period) cấu hình trên ECS Service.
+
+| Nơi config | Tham số chính | Terraform |
+|---|---|---|
+| Target Group | `HealthCheckPath`/`Port`, `Interval`, `Timeout`, `Healthy`/`UnhealthyThresholdCount`, `Matcher`; attribute `deregistration_delay.timeout_seconds` | `aws_lb_target_group` → `health_check {}`, `deregistration_delay` |
+| Task Definition | `containerDefinitions[].healthCheck`: `command`, `interval`, `timeout`, `retries`, `startPeriod` | `container_definitions` |
+| ECS Service | `loadBalancers` (gắn TG thì ECS mới dùng ALB check để thay task), `healthCheckGracePeriodSeconds`, `deploymentCircuitBreaker` | `aws_ecs_service` → `load_balancer {}`, `health_check_grace_period_seconds` |
+
+```bash
+aws elbv2 modify-target-group --target-group-arn <tg-arn> \
+  --health-check-path /health --health-check-interval-seconds 10 \
+  --healthy-threshold-count 2 --unhealthy-threshold-count 3
+
+aws elbv2 modify-target-group-attributes --target-group-arn <tg-arn> \
+  --attributes Key=deregistration_delay.timeout_seconds,Value=15
+
+aws ecs update-service --cluster <c> --service <s> \
+  --health-check-grace-period-seconds 60
+```
+
+```json
+"healthCheck": {
+  "command": ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"],
+  "interval": 30,
+  "timeout": 5,
+  "retries": 3,
+  "startPeriod": 60
+}
+```
+
+* Image phải có `curl`/`wget`, không thì container health check luôn fail.
+* Sửa Task Definition phải register revision mới rồi `update-service`.
+* Video-call đang để `health_check_grace_period_seconds = 0` và `deregistration_delay = 300`: nên nâng grace lên khoảng 30–60s ([deploy review](../video-call/docs/interview_deploy_review.md)).
 
 ---
 
